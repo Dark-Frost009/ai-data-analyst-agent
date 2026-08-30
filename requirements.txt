@@ -1,0 +1,10 @@
+streamlit
+pandas
+duckdb
+boto3
+botocore[crt]
+plotly
+python-dotenv
+pydantic
+sqlglot
+pytest
