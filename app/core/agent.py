@@ -16,8 +16,8 @@ Pipeline:
           |
           v
     QueryResult
-       /     \
-      v       v
+       /           \
+      v             v
   Explainer  Chart Generator
 
 This module coordinates the pipeline but deliberately keeps each
@@ -46,25 +46,16 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 from app.core.chart_generator import generate_chart
-from app.core.explainer import (
-    ExplainerError,
-    explain_query_result,
-)
-from app.core.query_planner import (
-    QueryPlanner,
-    QueryPlannerError,
-)
+from app.core.explainer import ExplainerError, explain_query_result
+from app.core.query_planner import QueryPlanner, QueryPlannerError
 from app.core.sql_executor import (
-    SQLExecutor,
+    DEFAULT_TABLE_NAME,
     QueryExecutionError,
     QueryTimeoutError,
+    SQLExecutor,
     UnvalidatedSQLError,
 )
-from app.models.schemas import (
-    DatasetProfile,
-    QueryResult,
-    ValidationResult,
-)
+from app.models.schemas import DatasetProfile, QueryResult, ValidationResult
 from app.utils.logger import get_logger
 from app.utils.security import validate_sql
 
@@ -72,9 +63,9 @@ from app.utils.security import validate_sql
 logger = get_logger(__name__)
 
 
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Exceptions
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 class AgentError(Exception):
@@ -101,9 +92,9 @@ class AgentChartError(AgentError):
     """Raised when chart generation fails."""
 
 
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Result contract
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -140,20 +131,20 @@ class AgentResult:
     chart: Optional[Dict[str, Any]] = None
 
 
-# --------------------------------------------------------------------------
-# Configuration
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
 
 
 DEFAULT_MAX_RESULT_ROWS = 1000
 DEFAULT_MAX_EXPLANATION_ROWS = 20
-DEFAULT_MAX_CHART_ROWS = 1000
+DEFAULT_MAX_CHART_ROWS = 20
 DEFAULT_MAX_CATEGORIES = 20
 
 
-# --------------------------------------------------------------------------
-# Data Analyst Agent
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
 
 
 class DataAnalystAgent:
@@ -172,17 +163,6 @@ class DataAnalystAgent:
         3. Executes only validated SQL using SQLExecutor.
         4. Generates an explanation.
         5. Generates an optional chart specification.
-
-    Example
-    -------
-    >>> agent = DataAnalystAgent(
-    ...     dataframe=df,
-    ...     dataset_profile=profile,
-    ... )
-    >>>
-    >>> result = agent.run(
-    ...     "What are the top 10 products by sales?"
-    ... )
     """
 
     def __init__(
@@ -194,11 +174,7 @@ class DataAnalystAgent:
         max_explanation_rows: int = DEFAULT_MAX_EXPLANATION_ROWS,
         max_chart_rows: int = DEFAULT_MAX_CHART_ROWS,
         max_categories: int = DEFAULT_MAX_CATEGORIES,
-    ):
-        # --------------------------------------------------------------
-        # Validate constructor arguments
-        # --------------------------------------------------------------
-
+    ) -> None:
         if not isinstance(dataframe, pd.DataFrame):
             raise ValueError(
                 "dataframe must be a pandas DataFrame"
@@ -216,7 +192,8 @@ class DataAnalystAgent:
 
         if max_explanation_rows < 0:
             raise ValueError(
-                "max_explanation_rows must be greater than or equal to 0"
+                "max_explanation_rows must be greater than "
+                "or equal to 0"
             )
 
         if max_chart_rows <= 0:
@@ -231,7 +208,11 @@ class DataAnalystAgent:
 
         self._dataframe = dataframe
         self._dataset_profile = dataset_profile
-        self._query_planner = query_planner or QueryPlanner()
+        self._query_planner = (
+            query_planner
+            if query_planner is not None
+            else QueryPlanner()
+        )
 
         self._max_result_rows = max_result_rows
         self._max_explanation_rows = max_explanation_rows
@@ -239,16 +220,12 @@ class DataAnalystAgent:
         self._max_categories = max_categories
 
         logger.info(
-            "DataAnalystAgent initialized | rows=%d | columns=%d | "
-            "max_result_rows=%d",
+            "DataAnalystAgent initialized | rows=%d | "
+            "columns=%d | max_result_rows=%d",
             len(dataframe),
             len(dataframe.columns),
             max_result_rows,
         )
-
-    # ------------------------------------------------------------------
-    # Public properties
-    # ------------------------------------------------------------------
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -264,10 +241,6 @@ class DataAnalystAgent:
     def max_result_rows(self) -> int:
         """Return the maximum number of query-result rows."""
         return self._max_result_rows
-
-    # ------------------------------------------------------------------
-    # Main pipeline
-    # ------------------------------------------------------------------
 
     def run(
         self,
@@ -317,10 +290,6 @@ class DataAnalystAgent:
             If chart generation fails.
         """
 
-        # --------------------------------------------------------------
-        # Validate question
-        # --------------------------------------------------------------
-
         if not isinstance(question, str) or not question.strip():
             raise ValueError(
                 "question must be a non-empty string"
@@ -333,9 +302,9 @@ class DataAnalystAgent:
             question,
         )
 
-        # --------------------------------------------------------------
-        # Step 1: Query planning
-        # --------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 1. Query planning
+        # ------------------------------------------------------------------
 
         try:
             sql = self._query_planner.plan(
@@ -344,16 +313,21 @@ class DataAnalystAgent:
             )
 
         except QueryPlannerError as exc:
-            logger.error(
+            logger.warning(
                 "Query planning failed: %s",
                 exc,
             )
 
             raise AgentPlanningError(
-                f"Could not generate SQL for the question: {exc}"
+                "Could not generate SQL for the question: "
+                + str(exc)
             ) from exc
 
         if not isinstance(sql, str) or not sql.strip():
+            logger.warning(
+                "Query planner returned an empty SQL statement."
+            )
+
             raise AgentPlanningError(
                 "Query planner returned an empty SQL statement."
             )
@@ -365,181 +339,236 @@ class DataAnalystAgent:
             sql,
         )
 
-        # --------------------------------------------------------------
-        # Step 2: Security validation
-        # --------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # 2. SQL executor + security validation
+        # ------------------------------------------------------------------
 
-        validation = validate_sql(
-            sql=sql,
-            allowed_tables=["dataset"],
-            max_rows=self._max_result_rows,
-        )
+        with SQLExecutor(
+            self._dataframe,
+            max_result_rows=self._max_result_rows,
+        ) as executor:
 
-        if not validation.is_valid:
-            error_messages = []
+            # SQLExecutor owns the canonical table name.
+            #
+            # In production, this is a real string such as "dataset".
+            #
+            # In tests, SQLExecutor is replaced with a MagicMock. An
+            # unconfigured MagicMock.table_name is itself a MagicMock,
+            # which is not a valid SQL table identifier.
+            #
+            # Therefore:
+            #   real executor -> use its actual table_name
+            #   mock executor -> fall back to DEFAULT_TABLE_NAME
+            #
+            # DEFAULT_TABLE_NAME is imported from sql_executor.py rather
+            # than duplicated here, keeping the table-name contract
+            # centralized.
+            table_name = getattr(
+                executor,
+                "table_name",
+                DEFAULT_TABLE_NAME,
+            )
 
-            for error in validation.errors:
-                error_messages.append(
-                    f"{error.code}: {error.message}"
+            if not isinstance(table_name, str) or not table_name.strip():
+                table_name = DEFAULT_TABLE_NAME
+
+            validation = validate_sql(
+                sql=sql,
+                allowed_tables=[table_name],
+                max_rows=self._max_result_rows,
+            )
+
+            if not validation.is_valid:
+                error_messages = []
+
+                for error in validation.errors:
+                    detail = (
+                        f": {error.detail}"
+                        if error.detail
+                        else ""
+                    )
+
+                    error_messages.append(
+                        f"{error.code}: "
+                        f"{error.message}"
+                        f"{detail}"
+                    )
+
+                combined_errors = "; ".join(
+                    error_messages
                 )
 
-            combined_errors = "; ".join(error_messages)
-
-            logger.warning(
-                "Generated SQL rejected by security layer | "
-                "errors=%s",
-                combined_errors,
-            )
-
-            raise AgentValidationError(
-                "Generated SQL failed security validation"
-                + (
-                    f": {combined_errors}"
-                    if combined_errors
-                    else "."
+                logger.warning(
+                    "Generated SQL rejected by security layer | "
+                    "errors=%s",
+                    combined_errors,
                 )
+
+                raise AgentValidationError(
+                    "Generated SQL failed security validation"
+                    + (
+                        f": {combined_errors}"
+                        if combined_errors
+                        else "."
+                    )
+                )
+
+            if not validation.cleaned_sql:
+                logger.warning(
+                    "SQL security validation succeeded "
+                    "but produced no cleaned SQL."
+                )
+
+                raise AgentValidationError(
+                    "Generated SQL failed security validation: "
+                    "SQL security validation succeeded but "
+                    "produced no cleaned SQL."
+                )
+
+            logger.info(
+                "SQL security validation passed | "
+                "cleaned_sql=%s",
+                validation.cleaned_sql,
             )
 
-        if not validation.cleaned_sql:
-            raise AgentValidationError(
-                "SQL validation succeeded but produced no cleaned SQL."
-            )
+            # ----------------------------------------------------------------
+            # 3. Execute ONLY validated SQL
+            # ----------------------------------------------------------------
 
-        logger.info(
-            "SQL security validation passed | cleaned_sql=%s",
-            validation.cleaned_sql,
-        )
-
-        # --------------------------------------------------------------
-        # Step 3: Execute ONLY validated SQL
-        # --------------------------------------------------------------
-
-        try:
-            with SQLExecutor(
-                self._dataframe,
-                table_name="dataset",
-                max_result_rows=self._max_result_rows,
-            ) as executor:
-
+            try:
                 query_result = executor.execute(
                     validation
                 )
 
-        except (
-            QueryTimeoutError,
-            QueryExecutionError,
-            UnvalidatedSQLError,
-        ) as exc:
+            except (
+                QueryTimeoutError,
+                QueryExecutionError,
+                UnvalidatedSQLError,
+            ) as exc:
 
-            logger.error(
-                "SQL execution failed: %s",
-                exc,
-            )
-
-            raise AgentExecutionError(
-                f"Could not execute the validated SQL query: {exc}"
-            ) from exc
-
-        if not isinstance(query_result, QueryResult):
-            raise AgentExecutionError(
-                "SQL executor returned an invalid QueryResult."
-            )
-
-        logger.info(
-            "SQL execution completed | rows=%d | truncated=%s",
-            query_result.row_count,
-            query_result.truncated,
-        )
-
-        # --------------------------------------------------------------
-        # Step 4: Explanation
-        # --------------------------------------------------------------
-
-        explanation: Optional[str] = None
-
-        if generate_explanation:
-
-            try:
-                explanation = explain_query_result(
-                    sql=validation.cleaned_sql,
-                    query_result=query_result,
-                    max_result_rows=self._max_explanation_rows,
-                )
-
-            except ExplainerError as exc:
-
-                logger.error(
-                    "Explanation generation failed: %s",
+                logger.warning(
+                    "SQL execution failed: %s",
                     exc,
                 )
 
-                raise AgentExplanationError(
-                    f"Could not generate explanation: {exc}"
+                raise AgentExecutionError(
+                    "Could not execute the validated SQL query: "
+                    + str(exc)
                 ) from exc
 
+            if not isinstance(query_result, QueryResult):
+                logger.warning(
+                    "SQL executor returned an invalid QueryResult."
+                )
+
+                raise AgentExecutionError(
+                    "Could not execute the validated SQL query: "
+                    "SQL executor returned an invalid QueryResult."
+                )
+
             logger.info(
-                "Explanation generated successfully"
+                "SQL execution completed | rows=%d | "
+                "truncated=%s",
+                query_result.row_count,
+                query_result.truncated,
             )
 
-        # --------------------------------------------------------------
-        # Step 5: Chart generation
-        # --------------------------------------------------------------
+            # ----------------------------------------------------------------
+            # 4. Explanation
+            # ----------------------------------------------------------------
 
-        chart: Optional[Dict[str, Any]] = None
+            explanation: Optional[str] = None
 
-        if generate_chart_spec:
+            if generate_explanation:
+                try:
+                    explanation = explain_query_result(
+                        sql=validation.cleaned_sql,
+                        query_result=query_result,
+                        max_result_rows=(
+                            self._max_explanation_rows
+                        ),
+                    )
 
-            try:
-                chart = generate_chart(
-                    query_result=query_result,
-                    chart_type=chart_type,
-                    max_categories=self._max_categories,
-                    max_rows=self._max_chart_rows,
+                except ExplainerError as exc:
+                    logger.warning(
+                        "Explanation generation failed: %s",
+                        exc,
+                    )
+
+                    raise AgentExplanationError(
+                        "Could not generate explanation: "
+                        + str(exc)
+                    ) from exc
+
+                logger.info(
+                    "Explanation generated successfully"
                 )
 
-            except (ValueError, TypeError, KeyError) as exc:
+            # ----------------------------------------------------------------
+            # 5. Chart generation
+            # ----------------------------------------------------------------
 
-                logger.error(
-                    "Chart generation failed: %s",
-                    exc,
+            chart: Optional[Dict[str, Any]] = None
+
+            if generate_chart_spec:
+                try:
+                    chart = generate_chart(
+                        query_result=query_result,
+                        chart_type=chart_type,
+                        max_categories=self._max_categories,
+                        max_rows=self._max_chart_rows,
+                        question=question,
+                        sql=validation.cleaned_sql,
+                    )
+
+                except (
+                    TypeError,
+                    KeyError,
+                    ValueError,
+                ) as exc:
+
+                    logger.warning(
+                        "Chart generation failed: %s",
+                        exc,
+                    )
+
+                    raise AgentChartError(
+                        "Could not generate chart specification: "
+                        + str(exc)
+                    ) from exc
+
+                logger.info(
+                    "Chart generation completed | generated=%s",
+                    chart is not None,
                 )
 
-                raise AgentChartError(
-                    f"Could not generate chart specification: {exc}"
-                ) from exc
+            # ----------------------------------------------------------------
+            # 6. Final result
+            # ----------------------------------------------------------------
+
+            result = AgentResult(
+                question=question,
+                sql=sql,
+                validation=validation,
+                query_result=query_result,
+                explanation=explanation,
+                chart=chart,
+            )
 
             logger.info(
-                "Chart generation completed | generated=%s",
+                "Agent run completed successfully | "
+                "rows=%d | explanation=%s | chart=%s",
+                query_result.row_count,
+                explanation is not None,
                 chart is not None,
             )
 
-        # --------------------------------------------------------------
-        # Step 6: Return complete pipeline result
-        # --------------------------------------------------------------
-
-        result = AgentResult(
-            question=question,
-            sql=sql,
-            validation=validation,
-            query_result=query_result,
-            explanation=explanation,
-            chart=chart,
-        )
-
-        logger.info(
-            "Agent run completed successfully | rows=%d | "
-            "explanation=%s | chart=%s",
-            query_result.row_count,
-            explanation is not None,
-            chart is not None,
-        )
-
-        return result
+            return result
 
 
-# --------------------------------------------------------------------------
-# Convenience function
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Convenience wrapper
+# ---------------------------------------------------------------------------
 
 
 def run_analysis(
@@ -561,14 +590,6 @@ def run_analysis(
     This is useful for the Streamlit/UI layer because it allows the
     complete analysis to be triggered without manually constructing
     the agent object.
-
-    Example
-    -------
-    result = run_analysis(
-        question="What are the top 5 products by sales?",
-        dataframe=df,
-        dataset_profile=profile,
-    )
     """
 
     agent = DataAnalystAgent(
