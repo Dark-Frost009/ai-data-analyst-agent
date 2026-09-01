@@ -2,157 +2,225 @@
 
 An AI-powered data analysis application that allows users to upload CSV datasets and ask analytical questions using natural language.
 
-The application converts natural-language questions into SQL, validates the generated SQL through a security layer, executes the query using DuckDB, and presents the results with explanations and visualizations.
+The application converts natural-language questions into DuckDB-compatible SQL using Amazon Bedrock, validates the generated SQL through an independent security layer, executes the validated query with DuckDB, and presents the results with tables, visualizations, and AI-generated explanations.
 
 ---
 
 ## 🚀 Features
 
-### 📊 Natural Language Data Analysis
+### 📊 Natural-Language Data Analysis
 
-Ask questions about your dataset in plain English instead of writing SQL manually.
+Ask questions about an uploaded dataset using plain English instead of writing SQL manually.
 
-Examples:
+Example questions:
 
-- What is the average percentage increase?
-- What are the top 5 movies by gross?
-- Which year had the highest average revenue?
-- Show the total gross by genre.
-- What are the lowest 5 values?
+```text
+How many records are there?
+```
+
+```text
+What are the top 3 artists by average gross?
+```
+
+```text
+Which tours had an average gross greater than $5 million?
+```
+
+```text
+Which year had the highest total gross?
+```
+
+```text
+Show the average gross by artist.
+```
+
+The application dynamically generates SQL based on the uploaded dataset's schema.
 
 ---
 
 ### 🧠 AI-Powered SQL Generation
 
-The application uses **Amazon Bedrock** to convert natural-language questions into DuckDB-compatible SQL queries.
+The application uses **Amazon Bedrock** to translate natural-language analytical questions into DuckDB-compatible SQL.
 
 The Query Planner:
 
-- Understands the user's analytical question.
+- Understands analytical intent.
 - Inspects the dataset profile.
-- Uses only available columns.
+- Uses only columns that exist in the dataset.
 - Preserves exact column names.
 - Generates read-only SQL.
-- Handles numeric and text-based values intelligently.
+- Handles aggregation, filtering, grouping, ordering, ranking, and limits.
+- Handles numeric values stored as text.
+- Handles currency-formatted values.
+- Handles date and timestamp values stored as text.
+- Applies deterministic corrections for explicit monetary thresholds.
+
+The LLM is responsible for generating the analytical query, while security validation is handled independently.
 
 ---
 
 ### 🛡️ SQL Security Validation
 
-Generated SQL is treated as untrusted input and passed through a dedicated security validation layer before execution.
+Generated SQL is treated as **untrusted input**.
 
-The security layer uses **SQLGlot** to parse the generated SQL into an Abstract Syntax Tree (AST).
+Before execution, every generated query passes through a dedicated SQL security validation layer.
 
-It validates:
+The security layer uses **SQLGlot** to parse SQL into an Abstract Syntax Tree (AST) and validates the query against the application's safety rules.
+
+The validator checks:
 
 - SQL statement type
 - Table references
 - Function usage
-- Multiple statements
+- Multiple SQL statements
 - Dangerous SQL operations
-- Query limits
-- Type conversions
+- Query result limits
 - Read-only execution
+- Type conversions
+- Allowed SQL functions
 
-Unsafe SQL is rejected before it reaches DuckDB.
+Unsafe SQL is rejected before reaching DuckDB.
+
+This creates a security boundary between the LLM and the database.
 
 ---
 
-### 🔢 Robust Data Handling
+### 🧮 Robust Numeric and Data Handling
 
-The Query Planner is designed to handle real-world CSV data where values may not be stored in clean numeric formats.
+Real-world CSV datasets frequently contain numbers stored as strings rather than clean numeric values.
 
-Supported cases include:
-
-- Numeric VARCHAR columns
-- Numbers containing commas
-- Currency values
-- Percentage values
-- Negative financial values using parentheses
-- NULL values
-- Date columns stored as VARCHAR
-- Timestamp columns stored as VARCHAR
-
-Examples of supported values:
+The Query Planner supports patterns such as:
 
 ```text
 1,234,567.89
 $1,234.50
-₹1,25,000
 25%
-(1,234.50)
 ```
 
-Safe conversions use DuckDB-compatible functions such as:
+For example, numeric text can be safely converted using:
 
 ```sql
 TRY_CAST(...)
-REPLACE(...)
-CASE
 ```
 
-The system deliberately avoids unsafe or unsupported functions such as `REGEXP_REPLACE`.
+Thousands separators can be removed using:
+
+```sql
+REPLACE(...)
+```
+
+Currency values can be cleaned before conversion:
+
+```sql
+TRY_CAST(
+    REPLACE(
+        REPLACE(
+            CAST("Average gross" AS VARCHAR),
+            ',',
+            ''
+        ),
+        '$',
+        ''
+    ) AS DOUBLE
+)
+```
+
+The application deliberately avoids unsupported or unsafe SQL functions such as `REGEXP_REPLACE`.
+
+---
+
+### 💰 Explicit Monetary Threshold Handling
+
+The Query Planner includes deterministic handling for explicit monetary quantities.
+
+Examples:
+
+```text
+$5 million
+$10 million
+$2.5 million
+$750 thousand
+$1 billion
+$5M
+$750K
+```
+
+These are converted to their mathematical equivalents:
+
+```text
+$5 million      → 5000000
+$10 million     → 10000000
+$2.5 million    → 2500000
+$750 thousand   → 750000
+$1 billion      → 1000000000
+```
+
+This provides an additional deterministic safeguard against incorrect numeric thresholds generated by the LLM.
 
 ---
 
 ## 🏗️ Architecture
 
-The application follows a controlled pipeline that separates AI reasoning, SQL validation, execution, and result presentation.
+The application follows a controlled pipeline that separates data processing, AI reasoning, security validation, SQL execution, and result presentation.
 
 ```text
-                    User
-                      │
-                      ▼
-            ┌──────────────────┐
-            │    Streamlit UI  │
-            └────────┬─────────┘
-                     │
-                     ▼
-            ┌──────────────────┐
-            │  Data Loader     │
-            │  & Profiler      │
-            └────────┬─────────┘
-                     │
-                     ▼
-            ┌──────────────────┐
-            │   AI Agent       │
-            └────────┬─────────┘
-                     │
-                     ▼
-            ┌──────────────────┐
-            │  Query Planner   │
-            │ Amazon Bedrock   │
-            └────────┬─────────┘
-                     │
-                     ▼
-            ┌──────────────────┐
-            │ SQL Security     │
-            │    Validator     │
-            │    SQLGlot       │
-            └────────┬─────────┘
-                     │
-                Valid SQL
-                     │
-                     ▼
-            ┌──────────────────┐
-            │  SQL Executor    │
-            │     DuckDB       │
-            └────────┬─────────┘
-                     │
-                     ▼
-            ┌──────────────────┐
-            │ Query Results    │
-            └───────┬──────────┘
-                    │
-          ┌─────────┴─────────┐
-          ▼                   ▼
- ┌─────────────────┐   ┌─────────────────┐
- │ Chart Generator │   │    Explainer    │
- └────────┬────────┘   └────────┬────────┘
-          │                     │
-          └──────────┬──────────┘
-                     ▼
-              Results in UI
+                         User
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │  Streamlit UI   │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │   Data Loader   │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │  Data Profiler  │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │    AI Agent     │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │  Query Planner  │
+                  │  Amazon Bedrock │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │ SQL Security    │
+                  │ Validator       │
+                  │    SQLGlot      │
+                  └────────┬────────┘
+                           │
+                     Valid SQL
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │  SQL Executor   │
+                  │     DuckDB      │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │ Query Results   │
+                  └───────┬─────────┘
+                          │
+                 ┌────────┴────────┐
+                 ▼                 ▼
+        ┌─────────────────┐ ┌─────────────────┐
+        │ Chart Generator │ │    Explainer    │
+        └────────┬────────┘ └────────┬────────┘
+                 │                   │
+                 └─────────┬─────────┘
+                           ▼
+                    Results in UI
 ```
 
 ---
@@ -161,72 +229,53 @@ The application follows a controlled pipeline that separates AI reasoning, SQL v
 
 1. The user uploads a CSV dataset.
 2. The Data Loader reads and prepares the dataset.
-3. The Data Profiler analyzes the dataset structure and available columns.
+3. The Data Profiler analyzes the dataset structure and columns.
 4. The user asks an analytical question in natural language.
-5. The Query Planner sends the question and dataset profile to Amazon Bedrock.
+5. The Query Planner receives the question and dataset profile.
 6. Amazon Bedrock generates a DuckDB-compatible SQL query.
-7. The generated SQL is passed to the SQL Security Validator.
-8. SQLGlot parses the SQL into an Abstract Syntax Tree (AST).
-9. The security layer validates the SQL against the project's safety rules.
+7. The generated SQL is treated as untrusted input.
+8. SQLGlot parses and validates the SQL.
+9. Security rules verify that the query is read-only and accesses only approved resources.
 10. Unsafe or invalid SQL is rejected.
-11. Validated SQL is passed to the SQL Executor.
-12. DuckDB executes the read-only analytical query.
-13. The result is processed for visualization and explanation.
-14. The Streamlit interface displays the analytical result.
+11. Valid SQL is passed to the SQL Executor.
+12. DuckDB executes the analytical query.
+13. The result is processed by the application.
+14. The Chart Generator determines whether a visualization is useful.
+15. The Explainer generates a concise analytical interpretation.
+16. The Streamlit interface presents the result.
 
 ---
 
-## 🔐 Security Design
+## 🔐 Security Model
 
-Security is a core part of the application architecture.
+The application follows a **defense-in-depth** approach.
 
-The AI-generated SQL is **never trusted automatically**.
-
-The application follows this flow:
+The LLM prompt provides instructions, but the application does not rely on the LLM to enforce security.
 
 ```text
-Natural Language
+LLM Instructions
        │
        ▼
- Amazon Bedrock
+Query Planner
        │
        ▼
- Generated SQL
+SQLGlot AST Validation
+       │
+       ├── Statement validation
+       ├── Table validation
+       ├── Function allowlist
+       ├── Dangerous operation checks
+       ├── Multiple statement checks
+       └── Result limit enforcement
        │
        ▼
- SQLGlot Parser
+    Safe SQL
        │
        ▼
- Security Validation
-       │
-   ┌───┴───┐
-   │       │
-Unsafe    Safe
-   │       │
-   ▼       ▼
-Reject   DuckDB
-           │
-           ▼
-         Result
+    DuckDB
 ```
 
-### Security Rules
-
-The validator:
-
-- Allows only read-only `SELECT` / `WITH` queries.
-- Rejects multiple SQL statements.
-- Restricts table references to approved tables.
-- Restricts SQL functions to an explicit allowlist.
-- Blocks data modification operations.
-- Blocks database definition operations.
-- Blocks file-access operations.
-- Blocks extension installation/loading.
-- Blocks external database attachment.
-- Enforces a maximum query result limit.
-- Validates SQL before execution.
-
-Examples of blocked operations include:
+The validator rejects operations such as:
 
 ```text
 INSERT
@@ -245,6 +294,140 @@ CALL
 EXPORT
 IMPORT
 ```
+
+The application is designed specifically for read-only analytical workloads.
+
+---
+
+## 🧪 Example Analytical Queries
+
+The agent has been tested with analytical questions involving different SQL patterns.
+
+### Record counting
+
+Question:
+
+```text
+How many records are there?
+```
+
+Generated SQL:
+
+```sql
+SELECT COUNT(*) FROM "dataset"
+```
+
+---
+
+### Ranking with aggregation
+
+Question:
+
+```text
+What are the top 3 artists by average gross?
+```
+
+Generated SQL:
+
+```sql
+SELECT
+    "Artist",
+    AVG(
+        TRY_CAST(
+            REPLACE(
+                REPLACE(
+                    CAST("Average gross" AS VARCHAR),
+                    ',',
+                    ''
+                ),
+                '$',
+                ''
+            ) AS DOUBLE
+        )
+    ) AS "Average Gross"
+FROM "dataset"
+GROUP BY "Artist"
+ORDER BY "Average Gross" DESC
+LIMIT 3
+```
+
+This demonstrates:
+
+- `AVG`
+- `GROUP BY`
+- numeric conversion
+- text cleaning
+- `ORDER BY`
+- descending ranking
+- `LIMIT`
+
+---
+
+### Monetary filtering
+
+Question:
+
+```text
+Which tours had an average gross greater than $5 million?
+```
+
+Generated SQL can safely convert the text-based monetary column before applying the threshold:
+
+```sql
+SELECT
+    "Tour title",
+    "Average gross"
+FROM "dataset"
+WHERE TRY_CAST(
+    REPLACE(
+        REPLACE(
+            CAST("Average gross" AS VARCHAR),
+            ',',
+            ''
+        ),
+        '$',
+        ''
+    ) AS DOUBLE
+) > 5000000
+```
+
+---
+
+### Grouping and counting
+
+Question:
+
+```text
+How many tours are there for each year?
+```
+
+Generated SQL:
+
+```sql
+SELECT
+    "Year(s)",
+    COUNT(*) AS tour_count
+FROM "dataset"
+GROUP BY "Year(s)"
+ORDER BY "Year(s)"
+```
+
+---
+
+## 📈 Result Presentation
+
+Depending on the analytical result, the application can present:
+
+- Query results in a table
+- Generated SQL
+- Result metadata
+- Visualizations when appropriate
+- AI-generated analytical explanations
+- Important values and patterns
+- Rankings and comparisons
+- Limitations of the result
+
+The goal is to provide both the **answer** and enough information to understand how the answer was produced.
 
 ---
 
@@ -311,15 +494,15 @@ ai-data-analyst-agent/
 
 | Technology | Purpose |
 |---|---|
-| Python | Core application language |
-| Streamlit | Web interface |
-| Amazon Bedrock | AI-powered SQL generation |
-| Amazon Nova | Large Language Model |
-| DuckDB | Local analytical SQL execution |
-| SQLGlot | SQL parsing and security validation |
-| Pandas | Data processing |
-| Pydantic | Data validation and schemas |
-| Pytest | Automated testing |
+| **Python** | Core application language |
+| **Streamlit** | Web application interface |
+| **Amazon Bedrock** | LLM inference and SQL generation |
+| **Amazon Nova** | Language model used through Bedrock |
+| **DuckDB** | Local analytical SQL execution |
+| **SQLGlot** | SQL parsing and security validation |
+| **Pandas** | Dataset processing |
+| **Pydantic** | Data validation and schemas |
+| **Pytest** | Automated testing |
 
 ---
 
@@ -365,21 +548,27 @@ AWS_REGION=ap-south-1
 BEDROCK_MODEL_ID=apac.amazon.nova-lite-v1:0
 ```
 
-Configure your AWS credentials using the AWS CLI or your preferred secure AWS credential mechanism.
+Configure AWS credentials using the AWS CLI or another secure AWS credential mechanism.
 
-**Never commit `.env` or AWS credentials to GitHub.**
+Never commit:
+
+```text
+.env
+```
+
+or AWS credentials to the repository.
 
 ---
 
 ## ▶️ Running the Application
 
-Start Streamlit with:
+Start the Streamlit application:
 
 ```powershell
 streamlit run app/main.py
 ```
 
-The application will be available locally at:
+The application will normally be available at:
 
 ```text
 http://localhost:8501
@@ -387,146 +576,23 @@ http://localhost:8501
 
 ---
 
-## 🧪 Running Tests
+## 🧪 Testing
 
-Run the complete test suite with:
+The project includes automated tests covering the major application components.
 
-```powershell
-pytest -v
-```
-
-Run a specific test module:
+Run the complete test suite:
 
 ```powershell
-pytest tests/test_security.py -v
+pytest -q
 ```
 
-Run Query Planner tests:
-
-```powershell
-pytest tests/test_query_planner.py -v
-```
-
----
-
-## 💬 Example Questions
-
-Once a dataset is uploaded, users can ask questions such as:
+Current regression result:
 
 ```text
-What is the average percentage increase?
+252 passed, 1 skipped
 ```
 
-```text
-What are the top 5 movies by actual gross?
-```
-
-```text
-Which year had the highest average gross?
-```
-
-```text
-What is the total gross by genre?
-```
-
-```text
-Show me the lowest 5 values.
-```
-
-```text
-What is the average adjusted gross?
-```
-
-The application generates SQL dynamically based on the uploaded dataset's schema.
-
----
-
-## 📈 Example Analytical Flow
-
-For a question such as:
-
-```text
-What is the average percentage increase?
-```
-
-The system can generate a query that safely:
-
-1. Reads the relevant columns.
-2. Removes currency symbols when necessary.
-3. Removes thousands separators.
-4. Converts text values into numeric values using `TRY_CAST`.
-5. Calculates the percentage increase.
-6. Handles zero denominators safely.
-7. Calculates the average.
-8. Returns the result to the application.
-
----
-
-## 🧠 Design Principles
-
-The project follows several important engineering principles.
-
-### Separation of Responsibilities
-
-Each component has a focused responsibility:
-
-```text
-Data Loader
-    ↓
-Data Profiler
-    ↓
-Query Planner
-    ↓
-Security Validator
-    ↓
-SQL Executor
-    ↓
-Result Processing
-    ↓
-Visualization + Explanation
-```
-
-### Defense in Depth
-
-The application does not rely only on the LLM prompt for security.
-
-Security is enforced independently by the SQL validation layer.
-
-```text
-LLM Instructions
-      +
-Planner Validation
-      +
-SQLGlot AST Validation
-      +
-Function Allowlist
-      +
-Table Allowlist
-      +
-LIMIT Enforcement
-      =
-Safer SQL Execution
-```
-
-### Fail Safely
-
-Invalid or unsafe queries are rejected instead of being executed.
-
-### Schema Awareness
-
-The AI receives the dataset profile and is instructed to use only real columns from the uploaded dataset.
-
-### Read-Only Analytics
-
-The application is designed for analytical queries and does not modify the underlying dataset.
-
----
-
-## 🧪 Testing Strategy
-
-The project includes tests covering the major application components.
-
-Test coverage includes:
+The test suite covers:
 
 - Agent behavior
 - Chart generation
@@ -539,15 +605,79 @@ Test coverage includes:
 - SQL security validation
 - SQL execution
 
-The security tests specifically verify that unsafe SQL is rejected.
+Security tests specifically verify that unsafe SQL operations are rejected.
+
+---
+
+## 🧱 Design Principles
+
+### Separation of Responsibilities
+
+Each component has a focused responsibility:
+
+```text
+Data Loader
+     ↓
+Data Profiler
+     ↓
+Query Planner
+     ↓
+Security Validator
+     ↓
+SQL Executor
+     ↓
+Result Processing
+     ↓
+Visualization + Explanation
+```
+
+---
+
+### Defense in Depth
+
+Security is implemented independently of the LLM.
+
+```text
+LLM Prompt
+    +
+Planner Rules
+    +
+SQLGlot AST Validation
+    +
+Function Allowlist
+    +
+Table Allowlist
+    +
+Limit Enforcement
+    =
+Safer AI-Assisted SQL Execution
+```
+
+---
+
+### Fail Safely
+
+Invalid or unsafe SQL is rejected instead of being executed.
+
+---
+
+### Schema Awareness
+
+The AI receives information about the uploaded dataset and is instructed to use only columns that actually exist.
+
+---
+
+### Read-Only Analytics
+
+The application is designed for analytical workloads and does not modify the underlying dataset.
 
 ---
 
 ## 🔒 Data & Credential Safety
 
-Uploaded datasets are intentionally excluded from Git tracking through `.gitignore`.
+Uploaded datasets are intentionally excluded from Git tracking.
 
-The repository also ignores:
+The repository ignores:
 
 ```text
 .env
@@ -559,75 +689,90 @@ data/*.parquet
 .streamlit/secrets.toml
 ```
 
-AWS credentials and other secrets should never be stored directly in the repository.
+AWS credentials and other secrets should never be committed to GitHub.
 
 ---
 
-## 🚧 Current Limitations
+## ⚠️ Current Limitations
 
 The current version is primarily designed for structured CSV-based analytical workflows.
 
-Potential future improvements include:
+Current limitations include:
 
-- Support for larger datasets
-- More advanced visualizations
-- Conversational follow-up questions
-- Query result caching
-- More sophisticated data type inference
-- Improved error recovery
-- Additional SQL dialect support
-- Persistent analytical sessions
-- Deployment to AWS
-- Authentication and user management
+- Primarily focused on CSV datasets
+- Query generation depends on LLM quality
+- Complex analytical questions may require additional validation or refinement
+- Dataset size is limited by the local execution environment
+- Conversational multi-turn analytical context is not yet a core feature
+- Authentication and multi-user support are not implemented
 
 ---
 
 ## 🗺️ Future Roadmap
 
+Potential future improvements include:
+
 ```text
 Current
-  │
-  ├── CSV Upload
-  ├── Dataset Profiling
-  ├── Natural Language Questions
-  ├── AI SQL Generation
-  ├── SQL Security Validation
-  ├── DuckDB Execution
-  ├── Visualization
-  └── AI Explanation
-        │
-        ▼
+   │
+   ├── CSV Upload
+   ├── Dataset Profiling
+   ├── Natural-Language Questions
+   ├── AI SQL Generation
+   ├── SQL Security Validation
+   ├── DuckDB Execution
+   ├── Visualization
+   └── AI Explanation
+          │
+          ▼
 Future
-  │
-  ├── Conversational Analytics
-  ├── Multiple Dataset Support
-  ├── Advanced Visualization
-  ├── Query History
-  ├── Result Caching
-  ├── Cloud Deployment
-  ├── Authentication
-  └── Production Monitoring
+   │
+   ├── Conversational Analytics
+   ├── Multiple Dataset Support
+   ├── Advanced Visualizations
+   ├── Query History
+   ├── Result Caching
+   ├── Cloud Deployment
+   ├── Authentication
+   └── Production Monitoring
 ```
 
 ---
 
-## 📌 Why This Project?
+## 💡 Why This Project?
 
-This project demonstrates how an AI-powered analytical application can combine:
+This project demonstrates how generative AI can be integrated into a data-analysis workflow without giving the language model direct control over database execution.
+
+The architecture combines:
 
 - Generative AI
-- Natural Language Processing
+- Natural-language processing
 - SQL generation
 - Data engineering
 - Data analysis
-- Software engineering
 - Application security
 - Automated testing
 - Cloud AI services
 
-Rather than allowing an LLM to directly execute generated SQL, the application introduces a dedicated validation layer between AI generation and database execution.
+The key architectural principle is the separation between **AI-generated SQL** and **SQL execution**.
 
-This makes the architecture more suitable for building safer AI-powered data applications.
+Instead of allowing the LLM to directly interact with the database:
+
+```text
+Natural Language
+      ↓
+     LLM
+      ↓
+Generated SQL
+      ↓
+Security Validation
+      ↓
+    DuckDB
+      ↓
+   Results
+```
+
+This provides an additional security boundary and makes the system easier to reason about, test, and extend.
 
 ---
 
@@ -642,16 +787,16 @@ https://github.com/Dark-Frost009
 
 ---
 
-## ⭐ Project Status
+## 📌 Project Status
 
-**Status: Working Prototype**
+**Functional and tested.**
 
-The application has been tested with multiple natural-language analytical questions and successfully generates and executes analytical SQL queries against uploaded datasets.
+The core analytical pipeline is implemented and covered by an automated test suite.
 
-The current version is being actively developed and improved.
+Latest regression test:
 
----
+```text
+252 passed, 1 skipped
+```
 
-## 📄 License
-
-This project is currently intended for educational, portfolio, and demonstration purposes.
+The project is currently focused on strengthening the user experience, documentation, and production-readiness of the existing architecture.
