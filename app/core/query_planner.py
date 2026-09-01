@@ -6,17 +6,17 @@ DuckDB-compatible SQL SELECT statement using Amazon Bedrock.
 
 Architectural boundary:
 
-    User question
-        ↓
-    QueryPlanner
-        ↓
-    Generated SQL
-        ↓
-    Security validation
-        ↓
-    SQLExecutor
-        ↓
-    QueryResult
+User question
+    ↓
+QueryPlanner
+    ↓
+Generated SQL
+    ↓
+Security validation
+    ↓
+SQLExecutor
+    ↓
+QueryResult
 
 QueryPlanner NEVER executes SQL and NEVER talks directly to DuckDB.
 """
@@ -58,9 +58,7 @@ ONE safe, read-only DuckDB-compatible SQL SELECT statement.
 
 The dataset is available as a table named `dataset`.
 
-======================================================================
-CORE RULES
-======================================================================
+# CORE RULES
 
 1. Return exactly ONE SQL SELECT statement.
 2. Never return explanations.
@@ -69,8 +67,8 @@ CORE RULES
 5. Never return multiple SQL statements.
 6. Never use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE,
    COPY, ATTACH, DETACH, INSTALL, LOAD, CALL, EXPORT, IMPORT, or any
-   other data-modifying, data-definition, file-access, extension,
-   network-access, or administrative operation.
+   other data-modifying, data-definition, file-access, network-access,
+   extension, or administrative operation.
 7. Use ONLY columns that actually exist in the supplied dataset profile.
 8. NEVER invent columns.
 9. NEVER rename or normalize a column name.
@@ -82,47 +80,143 @@ CORE RULES
 15. Preserve parentheses and brackets.
 16. Preserve hyphens.
 17. Preserve Unicode characters.
-18. Preserve Unicode whitespace, including non-breaking spaces.
+18. Preserve Unicode whitespace.
 19. When referencing a column, surround its exact name with double quotes.
 20. Query ONLY the table `dataset`.
 21. Use DuckDB-compatible SQL.
 22. Handle NULL values sensibly.
 23. Return ONLY the SQL SELECT statement.
 
-======================================================================
-EXACT COLUMN NAME HANDLING
-======================================================================
+# AGGREGATION AND GROUPING
 
-The dataset profile is the authoritative source of column names.
+When the user asks for a metric such as:
 
-Column names must be copied EXACTLY from the profile.
+- average
+- total
+- sum
+- count
+- minimum
+- maximum
 
-This is extremely important because CSV files may contain invisible
-Unicode characters such as non-breaking spaces.
+for each entity/category/group, aggregate at that entity/category/group
+level.
 
-Do NOT:
+For example, if the user asks:
 
-- replace spaces with underscores
-- remove spaces
-- change capitalization
-- replace Unicode whitespace with ASCII whitespace
-- remove punctuation
-- simplify column names
-- invent alternative spellings
+"top 3 artists by average gross"
 
-Always prefer:
+the query MUST:
 
-"Exact column name from profile"
+1. Group rows by "Artist".
+2. Calculate AVG(...) of "Average gross" for each artist.
+3. Order the artist-level averages from highest to lowest.
+4. Return only the requested top 3 artists.
 
-over an unquoted or normalized identifier.
+The query should have the equivalent structure:
 
-Always quote dataset column names using double quotes.
+SELECT
+    "Artist",
+    AVG(...) AS "Average Gross"
+FROM "dataset"
+GROUP BY "Artist"
+ORDER BY "Average Gross" DESC
+LIMIT 3
 
-======================================================================
-NUMERIC COLUMN HANDLING
-======================================================================
+Do NOT simply sort individual rows by "Average gross" and LIMIT 3.
 
-First inspect the dataset profile.
+Similarly:
+
+"top 5 artists by total gross"
+
+means:
+
+GROUP BY "Artist"
+SUM(...) AS ...
+ORDER BY ... DESC
+LIMIT 5
+
+"artists with average gross greater than $3 million"
+
+means:
+
+GROUP BY "Artist"
+AVG(...) AS ...
+HAVING AVG(...) > 3000000
+
+"highest average gross by artist"
+
+means:
+
+GROUP BY "Artist"
+AVG(...) AS ...
+ORDER BY ... DESC
+
+When the question asks for an aggregate metric "by", "per", or "for each"
+entity/category, the entity/category normally belongs in GROUP BY.
+
+Important distinction:
+
+- "Show the top 3 grossing tours" may refer to individual tour rows.
+- "Show the top 3 artists by average gross" refers to one aggregated row
+  per artist.
+- "For each artist, calculate average gross" explicitly requires grouping.
+- "Which artists have average gross greater than $3 million" requires
+  grouping by artist and filtering the aggregate with HAVING.
+
+# NUMERIC THRESHOLDS
+
+When the user explicitly provides a numeric threshold, preserve its exact
+mathematical meaning.
+
+Natural-language quantities:
+
+1 thousand = 1000
+1 million = 1000000
+1 billion = 1000000000
+
+Examples:
+
+$5 million = 5000000
+$10 million = 10000000
+$2.5 million = 2500000
+$750 thousand = 750000
+$1 billion = 1000000000
+
+If the user says:
+
+"greater than $5 million"
+
+the SQL comparison MUST use:
+
+> 5000000
+
+If the user says:
+
+"at least $5 million"
+
+use:
+
+>= 5000000
+
+If the user says:
+
+"less than $5 million"
+
+use:
+
+< 5000000
+
+If the user says:
+
+"at most $5 million"
+
+use:
+
+<= 5000000
+
+Never substitute a different numeric threshold.
+
+# NUMERIC COLUMN HANDLING
 
 If a column is already numeric, use it directly.
 
@@ -130,170 +224,65 @@ If a numeric-looking column is VARCHAR/text, use:
 
 TRY_CAST("column" AS DOUBLE)
 
-when appropriate.
-
-For numeric text containing commas, use nested REPLACE calls:
+For numeric text containing commas:
 
 TRY_CAST(
     REPLACE("column", ',', '')
     AS DOUBLE
 )
 
+# CURRENCY HANDLING
+
+Currency values may appear as text.
+
 For example:
 
-"1,234,567.89"
-
-becomes:
-
-1234567.89
-
-Do NOT use REGEXP_REPLACE.
-
-======================================================================
-CURRENCY HANDLING
-======================================================================
-
-Currency values may appear as text such as:
-
 "$1,234.50"
-"£1,234.50"
-"€1,234.50"
-"₹1,25,000"
-"$ 1,234.50"
 
-When the relevant column is VARCHAR/text, safely remove the currency
-symbol and commas using nested REPLACE calls.
+Safely clean them using nested REPLACE calls.
 
 Example:
 
 TRY_CAST(
     REPLACE(
         REPLACE(
-            REPLACE(
-                REPLACE(
-                    REPLACE(
-                        CAST("column" AS VARCHAR),
-                        ',',
-                        ''
-                    ),
-                    '$',
-                    ''
-                ),
-                '₹',
-                ''
-            ),
-            '£',
+            CAST("column" AS VARCHAR),
+            ',',
             ''
         ),
-        '€',
+        '$',
         ''
     )
     AS DOUBLE
 )
 
-Use only the transformations actually required by the dataset.
+Do NOT perform currency conversion unless the user explicitly asks for it.
 
-Do NOT perform currency conversion between currencies unless the user
-explicitly asks for it.
+# PERCENTAGE HANDLING
 
-"$1,000" means 1000, not a converted foreign-currency amount.
-
-======================================================================
-PERCENTAGE HANDLING
-======================================================================
-
-Percentage values may appear as:
+For text percentages such as:
 
 "25%"
 "12.5%"
 "100%"
 
-When a VARCHAR percentage contains `%`, remove `%` before converting:
+remove the percentage symbol before converting:
 
 TRY_CAST(
     REPLACE(
-        CAST("percentage_column" AS VARCHAR),
+        CAST("column" AS VARCHAR),
         '%',
         ''
     )
     AS DOUBLE
 )
 
-Only divide by 100 when the user explicitly asks for a proportion
-between 0 and 1.
+Only divide by 100 when the user explicitly requests a proportion between
+0 and 1.
 
-Example:
+# DATE HANDLING
 
-TRY_CAST(
-    REPLACE(
-        CAST("percentage_column" AS VARCHAR),
-        '%',
-        ''
-    )
-    AS DOUBLE
-) / 100.0
-
-Do NOT divide by 100 simply because a column represents a percentage.
-
-If values are already stored as proportions such as 0.25, keep them
-as 0.25 unless the user explicitly requests another representation.
-
-======================================================================
-NEGATIVE CURRENCY / NUMERIC VALUES
-======================================================================
-
-Some financial datasets represent negative values using parentheses:
-
-(1,234.50)
-
-If the dataset actually uses this representation and numeric calculations
-are required, handle it with CASE.
-
-Example:
-
-CASE
-    WHEN TRIM(CAST("column" AS VARCHAR)) LIKE '(%)'
-    THEN
-        -TRY_CAST(
-            REPLACE(
-                REPLACE(
-                    TRIM(CAST("column" AS VARCHAR)),
-                    '(',
-                    ''
-                ),
-                ')',
-                ''
-            )
-            AS DOUBLE
-        )
-    ELSE
-        TRY_CAST(
-            REPLACE(
-                TRIM(CAST("column" AS VARCHAR)),
-                ',',
-                ''
-            )
-            AS DOUBLE
-        )
-END
-
-Only use this complexity when necessary.
-
-======================================================================
-DATE AND TIMESTAMP HANDLING
-======================================================================
-
-Some CSV date/time columns may be loaded as VARCHAR/text.
-
-Before applying:
-
-DATE_TRUNC
-DATE_PART
-EXTRACT
-
-to a VARCHAR date/time column, convert it safely.
-
-For dates:
+If a date column is VARCHAR/text:
 
 TRY_CAST("date_column" AS DATE)
 
@@ -308,19 +297,11 @@ DATE_TRUNC(
     TRY_CAST("date_column" AS DATE)
 )
 
-Do NOT apply DATE_TRUNC, DATE_PART, or EXTRACT directly to a VARCHAR
-date column.
+Do not apply DATE_TRUNC, DATE_PART, or EXTRACT directly to VARCHAR dates.
 
-Use TRY_CAST so invalid values become NULL instead of causing the
-entire query to fail.
+# AGGREGATIONS
 
-Do not unnecessarily cast columns that are already DATE or TIMESTAMP.
-
-======================================================================
-AGGREGATIONS
-======================================================================
-
-Use appropriate aggregation functions:
+Use:
 
 SUM
 AVG
@@ -329,118 +310,74 @@ MIN
 MAX
 ROUND
 
-Use GROUP BY whenever aggregation requires it.
+Use GROUP BY when aggregation requires it.
 
-When the user asks for an average, use AVG.
+Use HAVING when filtering based on an aggregate value.
 
-When the user asks for total revenue/gross/sales, use SUM.
+Do NOT use WHERE to filter an aggregate result when HAVING is required.
 
-When the user asks how many records/items there are, use COUNT.
+Examples:
 
-======================================================================
-PERCENTAGE INCREASE / DECREASE
-======================================================================
+"artists with average gross above $3 million"
 
-When calculating percentage increase:
+must use:
 
-((new_value - old_value) / old_value) * 100
+GROUP BY "Artist"
+HAVING AVG(...) > 3000000
 
-When calculating percentage decrease:
+"top 3 artists by average gross"
 
-((old_value - new_value) / old_value) * 100
+must use:
 
-Only use this formula when the user is asking for percentage increase
-or decrease.
+GROUP BY "Artist"
+ORDER BY AVG(...) DESC
+LIMIT 3
 
-Protect against division by zero when appropriate.
+# TOP / BOTTOM / RANKING
 
-For example:
-
-CASE
-    WHEN old_value IS NULL OR old_value = 0 THEN NULL
-    ELSE ((new_value - old_value) / old_value) * 100
-END
-
-For VARCHAR numeric values, clean and convert them before performing
-the calculation.
-
-======================================================================
-TOP / BOTTOM / RANKING QUESTIONS
-======================================================================
-
-For:
-
-"top 5"
-"highest 10"
-"best 3"
-"lowest 5"
-"bottom 10"
-
-use ORDER BY and LIMIT.
-
-Top/highest:
+For top/highest questions:
 
 ORDER BY value DESC
 LIMIT N
 
-Bottom/lowest:
+For bottom/lowest questions:
 
 ORDER BY value ASC
 LIMIT N
 
-For numeric VARCHAR columns, perform the safe numeric conversion before
-ordering.
+For questions asking for top/bottom entities BY an aggregate metric,
+first calculate the metric at the entity level.
 
-If the numeric expression can produce NULL, exclude NULL values when
-that is necessary for a meaningful ranking.
+Examples:
 
-Example:
+"top 3 artists by average gross"
 
-SELECT
-    "Tour title",
-    TRY_CAST(
-        REPLACE(
-            CAST("Actual gross" AS VARCHAR),
-            ',',
-            ''
-        )
-        AS DOUBLE
-    ) AS actual_gross
-FROM dataset
-WHERE TRY_CAST(
-    REPLACE(
-        CAST("Actual gross" AS VARCHAR),
-        ',',
-        ''
-    )
-    AS DOUBLE
-) IS NOT NULL
-ORDER BY actual_gross DESC
+requires:
+
+GROUP BY "Artist"
+AVG(...)
+ORDER BY average DESC
+LIMIT 3
+
+"top 5 artists by total gross"
+
+requires:
+
+GROUP BY "Artist"
+SUM(...)
+ORDER BY total DESC
 LIMIT 5
 
-IMPORTANT:
+For numeric VARCHAR columns, clean and safely convert the value before
+ordering or aggregating.
 
-The column name above is illustrative.
-
-Always replace it with the EXACT column name from the actual dataset
-profile.
-
-======================================================================
-NULL HANDLING
-======================================================================
+# NULL HANDLING
 
 Do not automatically convert NULL to zero.
 
 Use COALESCE only when zero is logically appropriate.
 
-For rankings, it is often appropriate to exclude rows where the ranking
-value is NULL.
-
-======================================================================
-AVAILABLE SQL FUNCTIONS
-======================================================================
-
-Prefer only these safe functions:
+# AVAILABLE SQL FUNCTIONS
 
 SUM
 AVG
@@ -479,16 +416,15 @@ SUBSTRING
 STRPOS
 FORMAT
 IF
-ANY other function not explicitly allowed.
 
-======================================================================
-SQL SAFETY
-======================================================================
+or any other function not explicitly allowed.
+
+# SQL SAFETY
 
 The generated query must:
 
 - Start with SELECT.
-- Query only `dataset`.
+- Query only dataset.
 - Be read-only.
 - Contain exactly one SQL statement.
 - Never modify data.
@@ -523,7 +459,9 @@ class QueryPlanner:
         system_prompt: Optional[str] = None,
     ):
         self._llm_client = llm_client or get_bedrock_client()
-        self._system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+        self._system_prompt = (
+            system_prompt or DEFAULT_SYSTEM_PROMPT
+        )
 
     # ----------------------------------------------------------------------
     # Public API
@@ -548,8 +486,10 @@ class QueryPlanner:
                 "dataset_profile must be an instance of DatasetProfile"
             )
 
+        question = question.strip()
+
         prompt = self._build_prompt(
-            question=question.strip(),
+            question=question,
             dataset_profile=dataset_profile,
         )
 
@@ -560,7 +500,24 @@ class QueryPlanner:
             temperature=0.0,
         )
 
-        return self._extract_sql(response)
+        sql = self._extract_sql(response)
+
+        # Deterministic correction for explicit monetary thresholds.
+        #
+        # This protects against an LLM returning:
+        #
+        #     > 1000000
+        #
+        # when the user actually asked for:
+        #
+        #     > $5 million
+        #
+        sql = self._correct_explicit_monetary_threshold(
+            question=question,
+            sql=sql,
+        )
+
+        return sql
 
     # ----------------------------------------------------------------------
     # Prompt construction
@@ -575,18 +532,20 @@ class QueryPlanner:
         Build the prompt containing the complete dataset profile.
         """
 
-        profile_json = dataset_profile.model_dump_json(indent=2)
+        profile_json = dataset_profile.model_dump_json(
+            indent=2
+        )
 
         return f"""
 Dataset information:
 
 {profile_json}
 
-======================================================================
-AUTHORITATIVE SCHEMA
-======================================================================
+# AUTHORITATIVE SCHEMA
 
 The dataset information above is the source of truth.
+
+The dataset is available as a table named `dataset`.
 
 Use ONLY columns present in that profile.
 
@@ -607,8 +566,6 @@ Preserve:
 
 Always quote column names with double quotes.
 
-Do NOT normalize a column name.
-
 Do NOT:
 
 - replace spaces with underscores
@@ -619,43 +576,77 @@ Do NOT:
 - invent columns
 - rename columns
 
-======================================================================
-NUMERIC VALUES
-======================================================================
+# NUMERIC VALUES
 
 If a column is numeric, use it directly.
 
 If a numeric-looking column is VARCHAR/text, use TRY_CAST.
 
-For commas:
+For comma-separated numeric values:
 
 TRY_CAST(
     REPLACE("column", ',', '')
     AS DOUBLE
 )
 
-For currency values, remove only the required currency symbols and
-commas using nested REPLACE calls.
+# MONEY
 
-For percentages containing `%`:
+Explicit monetary quantities must be converted mathematically.
 
-TRY_CAST(
-    REPLACE(
-        CAST("column" AS VARCHAR),
-        '%',
-        ''
-    )
-    AS DOUBLE
-)
+Examples:
 
-Only divide by 100 when the user explicitly requests a 0-to-1
-proportion.
+$5 million -> 5000000
+$10 million -> 10000000
+$2.5 million -> 2500000
+$750 thousand -> 750000
+$1 billion -> 1000000000
 
-Do NOT use REGEXP_REPLACE.
+Never substitute a different threshold.
 
-======================================================================
-DATES
-======================================================================
+# AGGREGATION AND GROUPING
+
+When a question asks for an aggregate metric for each entity,
+category, or group, aggregate at that level.
+
+For example:
+
+"top 3 artists by average gross"
+
+means:
+
+1. GROUP BY "Artist"
+2. Calculate AVG(...) of "Average gross"
+3. ORDER BY the artist-level average DESC
+4. LIMIT 3
+
+Do NOT simply sort individual rows by "Average gross".
+
+Correct structure:
+
+SELECT
+    "Artist",
+    AVG(...) AS "Average Gross"
+FROM "dataset"
+GROUP BY "Artist"
+ORDER BY "Average Gross" DESC
+LIMIT 3
+
+Similarly:
+
+"artists with average gross greater than $3 million"
+
+requires:
+
+GROUP BY "Artist"
+HAVING AVG(...) > 3000000
+
+Use HAVING when filtering an aggregate result.
+
+For "top", "highest", "lowest", or "bottom" questions involving an
+aggregate metric, calculate the metric at the requested entity/category
+level before sorting and applying LIMIT.
+
+# DATES
 
 If a date/time column is VARCHAR/text:
 
@@ -672,26 +663,7 @@ DATE_TRUNC(
     TRY_CAST("date_column" AS DATE)
 )
 
-Do not apply DATE_TRUNC, DATE_PART, or EXTRACT directly to a VARCHAR
-date column.
-
-======================================================================
-PERCENTAGE CALCULATIONS
-======================================================================
-
-For percentage increase:
-
-((new_value - old_value) / old_value) * 100
-
-For percentage decrease:
-
-((old_value - new_value) / old_value) * 100
-
-Protect against division by zero with CASE when appropriate.
-
-======================================================================
-RANKING
-======================================================================
+# RANKING
 
 For top/highest questions:
 
@@ -703,17 +675,13 @@ For bottom/lowest questions:
 ORDER BY value ASC
 LIMIT N
 
-If the ranking value is a formatted numeric VARCHAR, clean and safely
-convert it before ordering.
+For top/bottom questions involving an aggregate metric, first GROUP BY the
+entity/category and calculate the requested aggregate.
 
-Exclude NULL ranking values when appropriate.
-
-======================================================================
-SQL REQUIREMENTS
-======================================================================
+# SQL REQUIREMENTS
 
 - Generate exactly ONE SELECT statement.
-- Query only `dataset`.
+- Query only dataset.
 - Use only columns from the dataset profile.
 - Use exact column names.
 - Quote column names with double quotes.
@@ -724,11 +692,8 @@ SQL REQUIREMENTS
 - Do not include code fences.
 - Do not include explanations.
 - Do not include multiple statements.
-- Do not include a semicolon except an optional final semicolon.
 
-======================================================================
-USER'S ANALYTICAL QUESTION
-======================================================================
+# USER'S ANALYTICAL QUESTION
 
 {question}
 
@@ -743,11 +708,6 @@ Return ONLY the SQL SELECT statement.
     def _extract_sql(response: str) -> str:
         """
         Extract and normalize exactly one SQL SELECT statement.
-
-        This is intentionally lightweight.
-
-        The authoritative SQL security validator performs the final
-        AST-level validation.
         """
 
         if not isinstance(response, str) or not response.strip():
@@ -757,29 +717,17 @@ Return ONLY the SQL SELECT statement.
 
         sql = response.strip()
 
-        # --------------------------------------------------------------
-        # Remove Markdown code fences if the model ignored instructions.
-        # --------------------------------------------------------------
-
+        # Remove Markdown code fences.
         fenced_match = re.fullmatch(
-            r"```(?:sql|SQL)?\s*(.*?)\s*```",
+            r"```(?:sql)?\s*(.*?)\s*```",
             sql,
-            flags=re.DOTALL,
+            flags=re.IGNORECASE | re.DOTALL,
         )
 
         if fenced_match:
             sql = fenced_match.group(1).strip()
 
-        # --------------------------------------------------------------
-        # Remove accidental leading/trailing whitespace.
-        # --------------------------------------------------------------
-
-        sql = sql.strip()
-
-        # --------------------------------------------------------------
         # Remove a single trailing semicolon.
-        # --------------------------------------------------------------
-
         if sql.endswith(";"):
             sql = sql[:-1].rstrip()
 
@@ -788,10 +736,7 @@ Return ONLY the SQL SELECT statement.
                 "The LLM response did not contain a SQL query."
             )
 
-        # --------------------------------------------------------------
-        # Must begin with SELECT.
-        # --------------------------------------------------------------
-
+        # Planner requires SELECT.
         if not re.match(
             r"^\s*SELECT\b",
             sql,
@@ -801,20 +746,11 @@ Return ONLY the SQL SELECT statement.
                 "The LLM response does not contain a SELECT statement."
             )
 
-        # --------------------------------------------------------------
         # Reject multiple statements.
-        # --------------------------------------------------------------
-
         if ";" in sql:
             raise QueryPlanningError(
                 "The LLM response contains multiple SQL statements."
             )
-
-        # --------------------------------------------------------------
-        # Additional planner-level dangerous keyword check.
-        #
-        # The security validator remains authoritative.
-        # --------------------------------------------------------------
 
         dangerous_keywords = (
             "INSERT",
@@ -841,8 +777,144 @@ Return ONLY the SQL SELECT statement.
                 flags=re.IGNORECASE,
             ):
                 raise QueryPlanningError(
-                    "The generated SQL contains a forbidden SQL operation: "
-                    f"{keyword}"
+                    "The generated SQL contains a forbidden SQL "
+                    f"operation: {keyword}"
                 )
 
         return sql
+
+    # ----------------------------------------------------------------------
+    # Explicit monetary threshold correction
+    # ----------------------------------------------------------------------
+
+    @staticmethod
+    def _correct_explicit_monetary_threshold(
+        question: str,
+        sql: str,
+    ) -> str:
+        """
+        Correct an explicit monetary threshold from the user's question.
+
+        Example:
+
+            Question:
+                Which tours had an average gross greater than $5 million?
+
+            LLM:
+                WHERE ... > 1000000
+
+            Corrected:
+                WHERE ... > 5000000
+        """
+
+        threshold = QueryPlanner._extract_monetary_threshold(
+            question
+        )
+
+        if threshold is None:
+            return sql
+
+        # Find a numeric comparison in the generated SQL.
+        #
+        # Examples:
+        #
+        # > 1000000
+        # >= 1000000
+        # < 1000000
+        # <= 1000000
+        # = 1000000
+        #
+        comparison_pattern = re.compile(
+            r"(?P<operator>>=|<=|<>|!=|>|<|=)"
+            r"\s*"
+            r"(?P<number>\d+(?:\.\d+)?)"
+            r"\b",
+            flags=re.IGNORECASE,
+        )
+
+        match = comparison_pattern.search(sql)
+
+        if not match:
+            return sql
+
+        old_number = match.group("number")
+        new_number = str(threshold)
+
+        if old_number == new_number:
+            return sql
+
+        corrected_sql = (
+            sql[:match.start("number")]
+            + new_number
+            + sql[match.end("number"):]
+        )
+
+        return corrected_sql
+
+    # ----------------------------------------------------------------------
+    # Monetary quantity parser
+    # ----------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_monetary_threshold(
+        question: str,
+    ) -> Optional[int]:
+        """
+        Extract an explicit monetary quantity from a natural-language question.
+
+        Examples:
+            "$5 million" -> 5000000
+            "5 million dollars" -> 5000000
+            "$2.5 million" -> 2500000
+            "$750 thousand" -> 750000
+            "$1 billion" -> 1000000000
+            "$5M" -> 5000000
+            "$750K" -> 750000
+            "5 mn" -> 5000000
+            "5bn" -> 5000000000
+            "5k" -> 5000
+
+        Returns None when no supported monetary quantity is found.
+        """
+
+        if not isinstance(question, str):
+            return None
+
+        text = question.lower().strip()
+
+        pattern = re.compile(
+            r"\$?\s*(\d+(?:,\d{3})*(?:\.\d+)?)\s*"
+            r"(billion|bn|b|million|mn|m|thousand|k)\b",
+            re.IGNORECASE,
+        )
+
+        match = pattern.search(text)
+
+        if not match:
+            return None
+
+        raw_number = match.group(1).replace(",", "")
+        unit = match.group(2).lower()
+
+        try:
+            number = float(raw_number)
+        except ValueError:
+            return None
+
+        multipliers = {
+            "billion": 1_000_000_000,
+            "bn": 1_000_000_000,
+            "b": 1_000_000_000,
+            "million": 1_000_000,
+            "mn": 1_000_000,
+            "m": 1_000_000,
+            "thousand": 1_000,
+            "k": 1_000,
+        }
+
+        multiplier = multipliers.get(unit)
+
+        if multiplier is None:
+            return None
+
+        return int(round(number * multiplier))
