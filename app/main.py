@@ -916,12 +916,51 @@ def _display_chart(chart_spec) -> None:
                 }
             )
 
-            st.bar_chart(
-                chart_df,
-                x=category_col,
-                y=value_col,
-                horizontal=is_horizontal,
-                sort=f"-{value_col}",
+            if is_horizontal:
+
+                # chart_generator.py already returns ranking data in
+                # descending metric order.
+                #
+                # Plotly horizontal categorical axes are displayed
+                # bottom-to-top, so reversing the category array places
+                # the highest-ranked category at the top.
+                fig = px.bar(
+                    chart_df,
+                    x=value_col,
+                    y=category_col,
+                    orientation="h",
+                )
+
+                fig.update_layout(
+                    yaxis=dict(
+                        categoryorder="array",
+                        categoryarray=list(
+                            reversed(
+                                chart_df[category_col].tolist()
+                            )
+                        ),
+                    ),
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    xaxis_title=value_col,
+                    yaxis_title="",
+                )
+
+            else:
+
+                fig = px.bar(
+                    chart_df,
+                    x=category_col,
+                    y=value_col,
+                )
+
+                fig.update_layout(
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    xaxis_title=category_col,
+                    yaxis_title=value_col,
+                )
+
+            st.plotly_chart(
+                fig,
                 use_container_width=True,
             )
 
@@ -1016,8 +1055,9 @@ def _display_chart(chart_spec) -> None:
 
         st.caption(
             f"ℹ️ Showing the top categories by value — {other_count:,} "
-            "additional categor" + ("y is" if other_count == 1 else "ies are") +
-            " grouped into \"Other\"."
+            "additional categor"
+            + ("y is" if other_count == 1 else "ies are")
+            + ' grouped into "Other".'
         )
 
 
@@ -1217,7 +1257,7 @@ def _display_analysis_result() -> None:
 
     # ----------------------------------------------------------------------
     # 2. Visualization
-    #    Only rendered when the Visualization Intelligence stage decided
+    # #    Only rendered when the Visualization Intelligence stage decided
     #    it adds value; otherwise a subtle notice is shown in its place
     #    (see _display_chart), never a silent empty gap.
     # ----------------------------------------------------------------------
