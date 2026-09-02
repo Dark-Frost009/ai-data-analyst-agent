@@ -59,7 +59,14 @@ import streamlit as st
 # --------------------------------------------------------------------------
 
 from app.config import config
-from app.core.agent import DataAnalystAgent
+from app.core.agent import (
+    AgentChartError,
+    AgentExecutionError,
+    AgentExplanationError,
+    AgentPlanningError,
+    AgentValidationError,
+    DataAnalystAgent,
+)
 from app.core.data_loader import (
     CSVEncodingError,
     CSVParsingError,
@@ -69,8 +76,6 @@ from app.core.data_loader import (
     load_csv,
 )
 from app.core.data_profiler import profile_dataframe
-from app.core.explainer import ExplainerError
-from app.core.llm_client import BedrockClientError
 from app.utils.logger import get_logger
 
 
@@ -1109,26 +1114,58 @@ def _run_analysis(
                 chart_type=chart_type,
             )
 
-        except BedrockClientError as exc:
+        except AgentPlanningError as exc:
 
-            logger.exception("Bedrock request failed")
+            logger.exception("Agent planning failed")
 
             st.error(
-                "❌ The AI model could not process the request."
+                "❌ The AI model could not generate a valid analysis plan."
             )
 
             st.exception(exc)
             return
 
-        except ExplainerError as exc:
+        except AgentExplanationError as exc:
 
-            logger.exception(
-                "Explanation generation failed"
-            )
+            logger.exception("Explanation generation failed")
 
             st.error(
                 "⚠️ The SQL analysis completed, but generating "
                 "the explanation failed."
+            )
+
+            st.exception(exc)
+            return
+
+        except AgentValidationError as exc:
+
+            logger.exception("SQL validation failed")
+
+            st.error(
+                "🛡️ The generated SQL did not pass the security checks."
+            )
+
+            st.exception(exc)
+            return
+
+        except AgentExecutionError as exc:
+
+            logger.exception("SQL execution failed")
+
+            st.error(
+                "❌ The validated SQL could not be executed."
+            )
+
+            st.exception(exc)
+            return
+
+        except AgentChartError as exc:
+
+            logger.exception("Chart generation failed")
+
+            st.error(
+                "⚠️ The analysis completed, but the visualization "
+                "could not be generated."
             )
 
             st.exception(exc)
