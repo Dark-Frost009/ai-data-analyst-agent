@@ -507,3 +507,25 @@ def test_validate_sql_rejects_empty_string():
 
     assert result.is_valid is False
     assert result.errors[0].code == "EMPTY_SQL"
+
+def test_validate_sql_rejects_union_with_unregistered_table():
+    result = validate_sql(
+        "SELECT * FROM orders "
+        "UNION ALL "
+        "SELECT * FROM secret_table",
+        allowed_tables=ORDERS,
+    )
+
+    assert result.is_valid is False
+    assert result.errors[0].code == "DISALLOWED_STATEMENT_TYPE"
+
+def test_validate_sql_rejects_cte_shadowing_with_unregistered_table():
+    result = validate_sql(
+        "WITH orders AS "
+        "(SELECT * FROM secret_table) "
+        "SELECT * FROM orders",
+        allowed_tables=ORDERS,
+    )
+
+    assert result.is_valid is False
+    assert result.errors[0].code == "DISALLOWED_TABLE_REFERENCE"    

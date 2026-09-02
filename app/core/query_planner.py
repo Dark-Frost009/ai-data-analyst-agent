@@ -814,29 +814,70 @@ Return ONLY the SQL SELECT statement.
         if threshold is None:
             return sql
 
-        # Find a numeric comparison in the generated SQL.
-        #
-        # Examples:
-        #
-        # > 1000000
-        # >= 1000000
-        # < 1000000
-        # <= 1000000
-        # = 1000000
-        #
+        # Find numeric comparisons, keeping enough of the left-hand
+        # expression to identify the monetary comparison. A generated
+        # query may contain unrelated numeric predicates (for example a
+        # year filter) before the monetary predicate.
         comparison_pattern = re.compile(
-            r"(?P<operator>>=|<=|<>|!=|>|<|=)"
+            r"(?P<expression>[^<>=!\n]+?)"
+            r"\s*(?P<operator>>=|<=|<>|!=|>|<|=)"
             r"\s*"
             r"(?P<number>\d+(?:\.\d+)?)"
             r"\b",
             flags=re.IGNORECASE,
         )
 
-        match = comparison_pattern.search(sql)
+        matches = list(comparison_pattern.finditer(sql))
 
-        if not match:
+        if not matches:
             return sql
 
+        # Prefer a comparison whose expression contains a monetary concept
+        # explicitly mentioned in the question (e.g. ``gross`` in
+        # ``average gross greater than $5 million``). This prevents an
+        # unrelated predicate such as ``Year > 2015`` from being rewritten.
+        monetary_terms = {
+            "amount",
+            "cost",
+            "earnings",
+            "fee",
+            "gross",
+            "income",
+            "price",
+            "profit",
+            "revenue",
+            "salary",
+            "sales",
+            "spend",
+            "ticket",
+            "value",
+        }
+
+        question_words = set(
+            re.findall(r"[a-z]+", question.lower())
+        )
+        relevant_terms = monetary_terms & question_words
+
+        match = None
+
+        if relevant_terms:
+            for candidate in matches:
+                expression_words = set(
+                    re.findall(
+                        r"[a-z]+",
+                        candidate.group("expression").lower(),
+                    )
+                )
+
+                if relevant_terms & expression_words:
+                    match = candidate
+                    break
+
+        # Preserve the previous behavior when the question does not contain
+        # a recognizable monetary term: use the first numeric comparison.
+        if match is None:
+            match = matches[0]
+            
         old_number = match.group("number")
         new_number = str(threshold)
 

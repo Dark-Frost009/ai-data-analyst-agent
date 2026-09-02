@@ -613,3 +613,80 @@ def test_extract_sql_rejects_multiple_statements():
         QueryPlanner._extract_sql(
             "SELECT * FROM dataset; SELECT COUNT(*) FROM dataset"
         )
+
+def test_correct_explicit_monetary_threshold_does_not_modify_prior_year_comparison():
+    planner = object.__new__(QueryPlanner)
+
+    sql = """
+        SELECT *
+        FROM `dataset`
+        WHERE "Year" > 2015
+          AND CAST(REPLACE(REPLACE("Average gross", '$', ''), ',', '') AS DOUBLE) > 1000000
+    """
+
+    corrected = planner._correct_explicit_monetary_threshold(
+        "Which tours had an average gross greater than $5 million and were after 2015?",
+        sql,
+    )
+
+    assert '"Year" > 2015' in corrected
+    assert 'AS DOUBLE) > 5000000' in corrected
+    assert 'AS DOUBLE) > 1000000' not in corrected
+
+
+def test_correct_explicit_monetary_threshold_handles_unrelated_numeric_comparison():
+    planner = object.__new__(QueryPlanner)
+
+    sql = """
+        SELECT *
+        FROM `dataset`
+        WHERE "Shows" >= 10
+          AND CAST(REPLACE(REPLACE("Average gross", '$', ''), ',', '') AS DOUBLE) > 1000000
+    """
+
+    corrected = planner._correct_explicit_monetary_threshold(
+        "Which tours had an average gross greater than $5 million and at least 10 shows?",
+        sql,
+    )
+
+    assert '"Shows" >= 10' in corrected
+    assert 'AS DOUBLE) > 5000000' in corrected
+    assert 'AS DOUBLE) > 1000000' not in corrected
+
+
+def test_correct_explicit_monetary_threshold_preserves_first_monetary_comparison():
+    planner = object.__new__(QueryPlanner)
+
+    sql = """
+        SELECT *
+        FROM `dataset`
+        WHERE CAST(REPLACE(REPLACE("Average gross", '$', ''), ',', '') AS DOUBLE) > 1000000
+    """
+
+    corrected = planner._correct_explicit_monetary_threshold(
+        "Which tours had an average gross greater than $5 million?",
+        sql,
+    )
+
+    assert 'AS DOUBLE) > 5000000' in corrected
+    assert 'AS DOUBLE) > 1000000' not in corrected
+
+
+def test_correct_explicit_monetary_threshold_handles_greater_equal():
+    planner = object.__new__(QueryPlanner)
+
+    sql = """
+        SELECT *
+        FROM `dataset`
+        WHERE "Year" >= 2015
+          AND CAST(REPLACE(REPLACE("Average gross", '$', ''), ',', '') AS DOUBLE) >= 1000000
+    """
+
+    corrected = planner._correct_explicit_monetary_threshold(
+        "Which tours had an average gross of at least $5 million and were from 2015 onward?",
+        sql,
+    )
+
+    assert '"Year" >= 2015' in corrected
+    assert 'AS DOUBLE) >= 5000000' in corrected
+    assert 'AS DOUBLE) >= 1000000' not in corrected

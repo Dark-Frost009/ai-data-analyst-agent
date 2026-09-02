@@ -39,13 +39,13 @@ Those responsibilities belong to:
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import pandas as pd
 
 from app.core.chart_generator import generate_chart
+from app.config import config
 from app.core.explainer import ExplainerError, explain_query_result
 from app.core.query_planner import QueryPlanner, QueryPlannerError
 from app.core.sql_executor import (
@@ -136,7 +136,7 @@ class AgentResult:
 # ---------------------------------------------------------------------------
 
 
-DEFAULT_MAX_RESULT_ROWS = 1000
+DEFAULT_MAX_RESULT_ROWS = config.max_query_result_rows
 DEFAULT_MAX_EXPLANATION_ROWS = 20
 DEFAULT_MAX_CHART_ROWS = 20
 DEFAULT_MAX_CATEGORIES = 20
