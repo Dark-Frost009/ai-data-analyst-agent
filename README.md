@@ -589,7 +589,7 @@ pytest -q
 Current regression result:
 
 ```text
-252 passed, 1 skipped
+262 passed, 1 skipped
 ```
 
 The test suite covers:
@@ -796,7 +796,7 @@ The core analytical pipeline is implemented and covered by an automated test sui
 Latest regression test:
 
 ```text
-252 passed, 1 skipped
+262 passed, 1 skipped
 ```
 
 The project is currently focused on strengthening the user experience, documentation, and production-readiness of the existing architecture.
