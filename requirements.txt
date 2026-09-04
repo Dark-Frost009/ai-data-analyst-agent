@@ -8,3 +8,4 @@ python-dotenv==1.1.1
 pydantic==2.11.7
 sqlglot==27.14.0
 pytest==8.4.1
+pytest-cov==7.1.0
