@@ -27,3 +27,14 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+  docker-build:
+    name: Docker image build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t ai-data-analyst-agent:ci .
