@@ -38,3 +38,32 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t ai-data-analyst-agent:ci .
+
+      - name: Start Docker container
+        run: docker run --detach --name ai-data-analyst-agent -p 8501:8501 ai-data-analyst-agent:ci
+
+      - name: Wait for container health
+        shell: bash
+        run: |
+          for attempt in {1..30}; do
+            health_status="$(docker inspect --format='{{.State.Health.Status}}' ai-data-analyst-agent)"
+            echo "Health status: ${health_status}"
+
+            if [ "${health_status}" = "healthy" ]; then
+              exit 0
+            fi
+
+            if [ "${health_status}" = "unhealthy" ]; then
+              docker logs ai-data-analyst-agent
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          docker logs ai-data-analyst-agent
+          exit 1
+
+      - name: Show container logs after failure
+        if: failure()
+        run: docker logs ai-data-analyst-agent
