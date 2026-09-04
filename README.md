@@ -691,6 +691,8 @@ unless the file actually exists, and never copy `.env` into the image.
 - `.dockerignore` excludes virtual environments, tests, local datasets,
   `.env` files, Git metadata, and Streamlit secrets from the build context.
 - AWS credentials are not baked into the image.
+- Docker checks Streamlit's `/_stcore/health` endpoint and reports the
+  container as `healthy` when the application is responding.
 
 ---
 
@@ -703,6 +705,10 @@ Run the complete test suite:
 ```powershell
 pytest -q
 ```
+
+The suite measures coverage for `app/` and enforces a minimum total coverage
+of **70%**. The current measured baseline is 73.68%; the exact value is
+reported by every test run.
 
 The test suite covers:
 
@@ -735,6 +741,10 @@ Useful manual checks include replacing an uploaded CSV with another file of
 the same name, clearing the active dataset, an unavailable Bedrock service,
 and a query that reaches the configured result limit.
 
+GitHub Actions runs automatically on every push and pull request. It executes
+the test suite with the coverage floor, builds the Docker image, starts the
+container, and waits for Docker to report it as healthy.
+
 ---
 
 ## 🚢 Deployment Checklist
@@ -750,6 +760,7 @@ Before deploying, verify the following:
 - [ ] `pytest -q` passes in the deployment build.
 - [ ] `docker build -t ai-data-analyst-agent .` completes successfully.
 - [ ] The container starts and the app is reachable at `localhost:8501`.
+- [ ] `docker ps` reports the running container as `healthy`.
 - [ ] The target deployment uses an IAM/workload role rather than a mounted
   personal AWS profile.
 - [ ] The service runs behind the authentication, TLS, network, and
