@@ -707,7 +707,7 @@ pytest -q
 ```
 
 The suite measures coverage for `app/` and enforces a minimum total coverage
-of **70%**. The current measured baseline is 73.68%; the exact value is
+of **70%**. The current measured baseline is 78.96%; the exact value is
 reported by every test run.
 
 The test suite covers:
@@ -724,6 +724,7 @@ The test suite covers:
 - SQL execution
 - Configuration validation
 - Streamlit-safe error presentation
+- Streamlit startup smoke rendering
 - Analysis-capacity control
 - DuckDB timeout, interruption, and disk-spill protection
 - Session-local follow-up context and reset behavior
