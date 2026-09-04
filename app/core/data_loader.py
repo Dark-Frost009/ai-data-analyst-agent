@@ -169,7 +169,10 @@ def load_csv(
     # Read file
     # ----------------------------------------------------------------------
 
-    raw_bytes = _read_all_bytes(uploaded_file)
+    raw_bytes = _read_all_bytes(
+        uploaded_file,
+        max_bytes=int(limit_bytes),
+    )
 
     # ----------------------------------------------------------------------
     # Empty file check
@@ -271,10 +274,20 @@ def _raise_too_large(
 # --------------------------------------------------------------------------
 
 
-def _read_all_bytes(uploaded_file) -> bytes:
+def _read_all_bytes(
+    uploaded_file,
+    max_bytes: int,
+) -> bytes:
     """
-    Read the full contents of a file-like object as bytes.
+    Read at most ``max_bytes + 1`` bytes from a file-like object.
+
+    The extra byte lets the caller detect an oversized file without first
+    materializing its full contents. Streamlit has already received the
+    upload, but this still protects the application from unbounded reads
+    when a generic file-like object does not report a trustworthy ``.size``.
     """
+    if max_bytes < 0:
+        raise ValueError("max_bytes must be greater than or equal to zero")
 
     # Reset the file position when possible so callers can safely upload
     # a file that has previously been read.
@@ -285,24 +298,40 @@ def _read_all_bytes(uploaded_file) -> bytes:
             # Not seekable; continue from the current position.
             pass
 
+    chunks = []
+    bytes_read = 0
+
     try:
-        data = uploaded_file.read()
+        while bytes_read <= max_bytes:
+            # Read in bounded chunks. The final read requests only enough
+            # data to establish whether the configured limit was exceeded.
+            chunk = uploaded_file.read(
+                min(1024 * 1024, max_bytes - bytes_read + 1)
+            )
+
+            if isinstance(chunk, str):
+                chunk = chunk.encode("utf-8")
+
+            if not isinstance(chunk, bytes):
+                raise DataLoaderError(
+                    "Uploaded file reader returned an unsupported data type."
+                )
+
+            if not chunk:
+                break
+
+            chunks.append(chunk)
+            bytes_read += len(chunk)
+
+    except DataLoaderError:
+        raise
 
     except Exception as exc:
         raise DataLoaderError(
             f"Could not read the uploaded file: {exc}"
         ) from exc
 
-    # Some file-like objects opened in text mode return str.
-    if isinstance(data, str):
-        data = data.encode("utf-8")
-
-    if not isinstance(data, bytes):
-        raise DataLoaderError(
-            "Uploaded file reader returned an unsupported data type."
-        )
-
-    return data
+    return b"".join(chunks)
 
 
 # --------------------------------------------------------------------------

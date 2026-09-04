@@ -24,9 +24,13 @@ import pytest
 from app.core.query_planner import (
     DEFAULT_SYSTEM_PROMPT,
     EmptyQuestionError,
+    MAX_CONVERSATION_TURNS,
+    MAX_HISTORY_QUESTION_CHARS,
+    MAX_HISTORY_SQL_CHARS,
     QueryPlanner,
     QueryPlanningError,
 )
+from app.core.llm_client import BedrockClientError
 from app.models.schemas import (
     ColumnProfile,
     DatasetProfile,
@@ -283,6 +287,84 @@ def test_prompt_tells_llm_to_use_dataset_table():
     prompt = kwargs["prompt"]
 
     assert "`dataset`" in prompt
+
+
+def test_prompt_includes_prior_turn_context_before_current_question():
+    """A follow-up can refer to the prior successful question and SQL."""
+
+    llm = _mock_llm("SELECT city FROM dataset LIMIT 5")
+    planner = QueryPlanner(llm_client=llm)
+    prior_question = "What are total sales by city?"
+    current_question = "Now show only the top 5."
+
+    planner.plan(
+        current_question,
+        _dataset_profile(),
+        conversation_context=[
+            {
+                "question": prior_question,
+                "sql": (
+                    "SELECT city, SUM(revenue) AS total_revenue "
+                    "FROM dataset GROUP BY city"
+                ),
+            }
+        ],
+    )
+
+    prompt = llm.generate_text.call_args.kwargs["prompt"]
+
+    assert "# PREVIOUS ANALYTICAL CONTEXT" in prompt
+    assert prior_question in prompt
+    assert "Previously validated SQL:" in prompt
+    assert prompt.index(prior_question) < prompt.index(current_question)
+
+
+def test_prompt_bounds_history_to_recent_turns_and_character_limits():
+    """Long sessions cannot grow the Bedrock prompt without bound."""
+
+    llm = _mock_llm("SELECT COUNT(*) FROM dataset")
+    planner = QueryPlanner(llm_client=llm)
+    context = [
+        {
+            "question": f"question-{index}-" + ("q" * 600),
+            "sql": f"SELECT {index} " + ("s" * 2_100),
+        }
+        for index in range(MAX_CONVERSATION_TURNS + 1)
+    ]
+
+    planner.plan(
+        "How many rows are there?",
+        _dataset_profile(),
+        conversation_context=context,
+    )
+
+    prompt = llm.generate_text.call_args.kwargs["prompt"]
+
+    assert "question-0-" not in prompt
+    assert prompt.count("Previous question:") == MAX_CONVERSATION_TURNS
+    assert "q" * (MAX_HISTORY_QUESTION_CHARS + 1) not in prompt
+    assert "s" * (MAX_HISTORY_SQL_CHARS + 1) not in prompt
+
+
+def test_prompt_ignores_malformed_history_items():
+    """Only complete question/SQL pairs are eligible for prompt history."""
+
+    llm = _mock_llm("SELECT COUNT(*) FROM dataset")
+    planner = QueryPlanner(llm_client=llm)
+
+    planner.plan(
+        "How many rows are there?",
+        _dataset_profile(),
+        conversation_context=[
+            {},
+            {"question": "Missing SQL"},
+            "not a mapping",
+        ],
+    )
+
+    prompt = llm.generate_text.call_args.kwargs["prompt"]
+
+    assert "# PREVIOUS ANALYTICAL CONTEXT" not in prompt
 
 
 # --------------------------------------------------------------------------
@@ -548,6 +630,23 @@ def test_llm_client_error_is_not_silently_swallowed():
     planner = QueryPlanner(llm_client=llm)
 
     with pytest.raises(RuntimeError, match="Bedrock unavailable"):
+        planner.plan(
+            "How many rows are there?",
+            _dataset_profile(),
+        )
+
+
+def test_bedrock_client_error_becomes_query_planning_error():
+    """Typed Bedrock failures must reach the UI as a planning failure."""
+    llm = MagicMock()
+    llm.generate_text.side_effect = BedrockClientError("Bedrock unavailable")
+
+    planner = QueryPlanner(llm_client=llm)
+
+    with pytest.raises(
+        QueryPlanningError,
+        match="could not generate an analysis plan",
+    ):
         planner.plan(
             "How many rows are there?",
             _dataset_profile(),

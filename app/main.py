@@ -60,6 +60,7 @@ import streamlit as st
 
 from app.config import config
 from app.core.agent import (
+    AgentCapacityError,
     AgentChartError,
     AgentExecutionError,
     AgentExplanationError,
@@ -76,6 +77,7 @@ from app.core.data_loader import (
     load_csv,
 )
 from app.core.data_profiler import profile_dataframe
+from app.core.query_planner import MAX_CONVERSATION_TURNS
 from app.utils.logger import get_logger
 
 
@@ -155,6 +157,18 @@ st.html(
         }
 
         p {
+            color: #64748b;
+        }
+
+        /* Streamlit Markdown inherits the active theme's text color.
+           The app surface is intentionally light, so explicitly set
+           readable body and list colors for AI-generated explanations. */
+        div[data-testid="stMarkdownContainer"] p,
+        div[data-testid="stMarkdownContainer"] li {
+            color: #475569 !important;
+        }
+
+        div[data-testid="stMarkdownContainer"] li::marker {
             color: #64748b;
         }
 
@@ -301,7 +315,9 @@ st.html(
 
             letter-spacing: -0.045em;
 
-            color: #0f172a;
+            color: #0f172a !important;
+            -webkit-text-fill-color: #0f172a;
+            caret-color: #0f172a !important;
         }
 
         .hero-description {
@@ -498,10 +514,17 @@ st.html(
 
         div[data-testid="stTextArea"] textarea:focus {
             border-color: #93c5fd;
+            caret-color: #2563eb !important;
 
             box-shadow:
                 0 0 0 3px rgba(59, 130, 246, 0.10),
                 0 5px 16px rgba(15, 23, 42, 0.035);
+        }
+
+        div[data-testid="stTextArea"] textarea::placeholder {
+            color: #94a3b8 !important;
+            -webkit-text-fill-color: #94a3b8;
+            opacity: 1;
         }
 
 
@@ -722,8 +745,50 @@ def _initialize_session_state() -> None:
     if "uploaded_filename" not in st.session_state:
         st.session_state.uploaded_filename = None
 
+    if "uploaded_file_signature" not in st.session_state:
+        st.session_state.uploaded_file_signature = None
 
-def _load_uploaded_file(uploaded_file) -> None:
+    if "uploader_key_version" not in st.session_state:
+        st.session_state.uploader_key_version = 0
+
+    if "conversation_history" not in st.session_state:
+        st.session_state.conversation_history = []
+
+
+def _uploaded_file_signature(uploaded_file) -> tuple:
+    """Return Streamlit upload metadata that changes for a new upload."""
+    return (
+        getattr(uploaded_file, "file_id", None),
+        getattr(uploaded_file, "name", None),
+        getattr(uploaded_file, "size", None),
+    )
+
+
+def _clear_dataset() -> None:
+    """Clear all analysis state and force Streamlit to create a fresh uploader."""
+    st.session_state.dataframe = None
+    st.session_state.dataset_profile = None
+    st.session_state.agent = None
+    st.session_state.last_result = None
+    st.session_state.uploaded_filename = None
+    st.session_state.uploaded_file_signature = None
+    st.session_state.conversation_history = []
+    st.session_state.uploader_key_version += 1
+
+    logger.info("Dataset cleared from Streamlit session")
+
+
+def _clear_conversation_history() -> None:
+    """Clear session-local follow-up context without clearing the dataset."""
+
+    st.session_state.conversation_history = []
+    logger.info("Conversation context cleared from Streamlit session")
+
+
+def _load_uploaded_file(
+    uploaded_file,
+    upload_signature: tuple,
+) -> None:
     """
     Load and profile an uploaded CSV file.
 
@@ -769,20 +834,20 @@ def _load_uploaded_file(uploaded_file) -> None:
         st.error(
             "❌ An unexpected error occurred while preparing the dataset."
         )
-
-        st.exception(exc)
         return
 
     st.session_state.dataframe = dataframe
     st.session_state.dataset_profile = dataset_profile
     st.session_state.agent = agent
     st.session_state.last_result = None
+    st.session_state.conversation_history = []
 
     st.session_state.uploaded_filename = getattr(
         uploaded_file,
         "name",
         "uploaded.csv",
     )
+    st.session_state.uploaded_file_signature = upload_signature
 
     logger.info(
         "Dataset loaded into Streamlit session | filename=%s | "
@@ -1040,8 +1105,7 @@ def _display_chart(chart_spec) -> None:
         logger.exception("Failed to render chart")
 
         st.warning(
-            "⚠️ The analysis succeeded, but the chart "
-            f"could not be rendered: {exc}"
+            "⚠️ The analysis succeeded, but the chart could not be rendered."
         )
 
         return
@@ -1152,7 +1216,20 @@ def _run_analysis(
                 generate_explanation=True,
                 generate_chart_spec=True,
                 chart_type=chart_type,
+                conversation_context=(
+                    st.session_state.conversation_history
+                ),
             )
+
+        except AgentCapacityError:
+
+            logger.warning("Analysis request rejected because capacity is full")
+
+            st.warning(
+                "⏳ The app is busy processing another analysis. "
+                "Please try again in a moment."
+            )
+            return
 
         except AgentPlanningError as exc:
 
@@ -1161,8 +1238,6 @@ def _run_analysis(
             st.error(
                 "❌ The AI model could not generate a valid analysis plan."
             )
-
-            st.exception(exc)
             return
 
         except AgentExplanationError as exc:
@@ -1173,8 +1248,6 @@ def _run_analysis(
                 "⚠️ The SQL analysis completed, but generating "
                 "the explanation failed."
             )
-
-            st.exception(exc)
             return
 
         except AgentValidationError as exc:
@@ -1184,8 +1257,6 @@ def _run_analysis(
             st.error(
                 "🛡️ The generated SQL did not pass the security checks."
             )
-
-            st.exception(exc)
             return
 
         except AgentExecutionError as exc:
@@ -1195,8 +1266,6 @@ def _run_analysis(
             st.error(
                 "❌ The validated SQL could not be executed."
             )
-
-            st.exception(exc)
             return
 
         except AgentChartError as exc:
@@ -1207,8 +1276,6 @@ def _run_analysis(
                 "⚠️ The analysis completed, but the visualization "
                 "could not be generated."
             )
-
-            st.exception(exc)
             return
 
         except Exception as exc:
@@ -1220,11 +1287,28 @@ def _run_analysis(
             st.error(
                 "❌ The analysis could not be completed."
             )
-
-            st.exception(exc)
             return
 
     st.session_state.last_result = result
+
+    # Only completed, validated work becomes context for a later follow-up.
+    # The planner itself applies the same bound again as a defense in depth.
+    if result.validation.is_valid and result.validation.cleaned_sql:
+        history = list(st.session_state.conversation_history)
+        history.append(
+            {
+                "question": result.question,
+                "sql": result.validation.cleaned_sql,
+            }
+        )
+        st.session_state.conversation_history = history[
+            -MAX_CONVERSATION_TURNS:
+        ]
+
+        logger.info(
+            "Conversation context updated | retained_turns=%d",
+            len(st.session_state.conversation_history),
+        )
 
 
 def _display_analysis_result() -> None:
@@ -1244,6 +1328,9 @@ def _display_analysis_result() -> None:
         </div>
         """
     )
+
+    for warning in getattr(result, "warnings", []):
+        st.warning(f"⚠️ {warning}")
 
     # ----------------------------------------------------------------------
     # 1. Key insight / explanation
@@ -1274,10 +1361,16 @@ def _display_analysis_result() -> None:
 
     if query_result is not None:
 
-        st.caption(
-            f"Rows returned: {query_result.row_count:,} "
-            f"| Truncated: {query_result.truncated}"
-        )
+        if query_result.truncated:
+            st.caption(
+                f"Rows returned: {query_result.row_count:,} "
+                "| Reached the result limit; additional rows may be "
+                "available."
+            )
+        else:
+            st.caption(
+                f"Rows returned: {query_result.row_count:,}"
+            )
 
         st.dataframe(
             query_result.dataframe,
@@ -1349,6 +1442,7 @@ def main() -> None:
         uploaded_file = st.file_uploader(
             "Upload a CSV file",
             type=["csv"],
+            key=f"csv_uploader_{st.session_state.uploader_key_version}",
             help=(
                 f"Maximum upload size: "
                 f"{config.max_upload_size_mb} MB"
@@ -1357,15 +1451,39 @@ def main() -> None:
 
         if uploaded_file is not None:
 
-            current_filename = getattr(
-                uploaded_file,
-                "name",
-                None,
+            current_upload_signature = _uploaded_file_signature(
+                uploaded_file
             )
 
-            if current_filename != st.session_state.uploaded_filename:
+            if (
+                current_upload_signature
+                != st.session_state.uploaded_file_signature
+            ):
 
-                _load_uploaded_file(uploaded_file)
+                _load_uploaded_file(
+                    uploaded_file,
+                    upload_signature=current_upload_signature,
+                )
+
+        if st.button(
+            "Clear active dataset",
+            disabled=st.session_state.dataframe is None,
+            use_container_width=True,
+        ):
+            _clear_dataset()
+            st.rerun()
+
+        if st.button(
+            "Clear follow-up context",
+            disabled=not st.session_state.conversation_history,
+            use_container_width=True,
+            help=(
+                "Forget prior questions from this browser session while "
+                "keeping the current dataset loaded."
+            ),
+        ):
+            _clear_conversation_history()
+            st.rerun()
 
         st.divider()
 
@@ -1582,6 +1700,16 @@ def main() -> None:
     )
 
     st.subheader("💬 Ask a question about your data")
+
+    history_count = len(st.session_state.conversation_history)
+
+    if history_count:
+        st.caption(
+            f"💬 Follow-up context is active from the last "
+            f"{history_count} successful "
+            f"{'question' if history_count == 1 else 'questions'} in "
+            "this browser session."
+        )
 
     question = st.text_area(
         "Your question",

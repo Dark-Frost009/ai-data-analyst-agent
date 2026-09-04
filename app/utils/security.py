@@ -303,6 +303,26 @@ def _check_table_allowlist(
 
         table_name = table.name.lower()
 
+        # This application registers exactly one unqualified in-memory
+        # table. A name such as ``main.dataset`` or ``catalog.main.dataset``
+        # must not inherit permission merely because its final component is
+        # called ``dataset``.
+        catalog = getattr(table, "catalog", None)
+        database = getattr(table, "db", None)
+
+        if catalog or database:
+            qualified_name = ".".join(
+                str(part)
+                for part in (catalog, database, table.name)
+                if part
+            )
+
+            return (
+                "QUALIFIED_TABLE_REFERENCE",
+                "Catalog- and schema-qualified table references are not allowed.",
+                f"Qualified reference: '{qualified_name}'.",
+            )
+
         if not table_name:
             continue
 

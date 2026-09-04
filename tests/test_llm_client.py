@@ -83,10 +83,18 @@ def test_client_uses_config_defaults_for_region_and_model(mock_boto_client):
     client = BedrockClient()
     client.generate_text("Say hello")
 
-    mock_boto_client.assert_called_once_with(
-        "bedrock-runtime",
-        region_name=config.aws_region,
-    )
+    mock_boto_client.assert_called_once()
+
+    client_kwargs = mock_boto_client.call_args.kwargs
+
+    assert mock_boto_client.call_args.args == ("bedrock-runtime",)
+    assert client_kwargs["region_name"] == config.aws_region
+
+    sdk_config = client_kwargs["config"]
+    assert sdk_config.connect_timeout == config.bedrock_connect_timeout_seconds
+    assert sdk_config.read_timeout == config.bedrock_read_timeout_seconds
+    assert sdk_config.retries["total_max_attempts"] == 1
+    assert sdk_config.retries["mode"] == "standard"
 
     called_kwargs = mock_runtime.converse.call_args.kwargs
 

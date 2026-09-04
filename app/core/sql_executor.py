@@ -22,6 +22,9 @@ hold a live DuckDB connection or actually run a query.
 
   - `memory_limit` / `threads` cap resource usage per connection.
 
+  - `temp_directory=''` disables disk spilling. Queries that cannot run
+    within the memory budget fail instead of consuming host disk space.
+
   - A soft timeout is enforced by running the query in a worker thread
     and calling `connection.interrupt()` if it overruns.
 
@@ -243,6 +246,14 @@ class SQLExecutor:
 
         conn.execute(
             f"SET threads={config.duckdb_thread_limit}"
+        )
+
+        # Keep query intermediates in memory. Without this setting,
+        # DuckDB may spill large sorts, joins, or aggregations to the
+        # host's temporary directory, bypassing the intended memory
+        # budget with disk consumption.
+        conn.execute(
+            "SET temp_directory=''"
         )
 
         # Key defense against DuckDB file/network-access functions.

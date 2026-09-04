@@ -469,6 +469,25 @@ def test_validate_sql_rejects_unregistered_table():
     assert result.errors[0].code == "DISALLOWED_TABLE_REFERENCE"
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM main.orders",
+        "SELECT * FROM catalog.main.orders",
+    ],
+)
+def test_validate_sql_rejects_qualified_table_references(sql):
+    """The registered in-memory table must not be schema-qualified."""
+
+    result = validate_sql(
+        sql,
+        allowed_tables=ORDERS,
+    )
+
+    assert result.is_valid is False
+    assert result.errors[0].code == "QUALIFIED_TABLE_REFERENCE"
+
+
 def test_validate_sql_rejects_unparseable_sql():
     result = validate_sql(
         "SELECT * FROM orders WHERE (id = 1",
@@ -528,4 +547,4 @@ def test_validate_sql_rejects_cte_shadowing_with_unregistered_table():
     )
 
     assert result.is_valid is False
-    assert result.errors[0].code == "DISALLOWED_TABLE_REFERENCE"    
+    assert result.errors[0].code == "DISALLOWED_TABLE_REFERENCE"

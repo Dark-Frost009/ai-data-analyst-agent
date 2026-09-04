@@ -29,6 +29,7 @@ import time
 from typing import Any, Optional
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import (
     BotoCoreError,
     ClientError,
@@ -139,6 +140,13 @@ class BedrockClient:
         self._client = boto3.client(
             "bedrock-runtime",
             region_name=self._region_name,
+            config=Config(
+                connect_timeout=config.bedrock_connect_timeout_seconds,
+                read_timeout=config.bedrock_read_timeout_seconds,
+                # This wrapper owns retry behavior. Avoid SDK-level retries
+                # multiplying requests, latency, and Bedrock cost.
+                retries={"total_max_attempts": 1, "mode": "standard"},
+            ),
         )
 
         logger.info(

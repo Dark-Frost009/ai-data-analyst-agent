@@ -39,8 +39,10 @@ Those responsibilities belong to:
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from functools import wraps
+from time import perf_counter
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 import pandas as pd
 
@@ -56,7 +58,11 @@ from app.core.sql_executor import (
     UnvalidatedSQLError,
 )
 from app.models.schemas import DatasetProfile, QueryResult, ValidationResult
-from app.utils.logger import get_logger
+from app.utils.analysis_capacity import (
+    AnalysisCapacityExceededError,
+    acquire_analysis_slot,
+)
+from app.utils.logger import analysis_log_context, get_logger
 from app.utils.security import validate_sql
 
 
@@ -90,6 +96,43 @@ class AgentExplanationError(AgentError):
 
 class AgentChartError(AgentError):
     """Raised when chart generation fails."""
+
+
+class AgentCapacityError(AgentError):
+    """Raised when this application process is already at analysis capacity."""
+
+
+def _limit_concurrent_analyses(method):
+    """Wrap one complete agent run in a process-wide capacity reservation."""
+
+    @wraps(method)
+    def wrapped(*args, **kwargs):
+        try:
+            with acquire_analysis_slot():
+                with analysis_log_context():
+                    started_at = perf_counter()
+                    logger.info("Analysis started")
+
+                    try:
+                        result = method(*args, **kwargs)
+                    except Exception:
+                        logger.warning(
+                            "Analysis failed | duration_ms=%.1f",
+                            (perf_counter() - started_at) * 1000,
+                        )
+                        raise
+
+                    logger.info(
+                        "Analysis completed | duration_ms=%.1f",
+                        (perf_counter() - started_at) * 1000,
+                    )
+                    return result
+        except AnalysisCapacityExceededError as exc:
+            raise AgentCapacityError(
+                "The service is currently busy processing other analyses."
+            ) from exc
+
+    return wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +172,7 @@ class AgentResult:
     query_result: QueryResult
     explanation: Optional[str] = None
     chart: Optional[Dict[str, Any]] = None
+    warnings: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -242,12 +286,16 @@ class DataAnalystAgent:
         """Return the maximum number of query-result rows."""
         return self._max_result_rows
 
+    @_limit_concurrent_analyses
     def run(
         self,
         question: str,
         generate_explanation: bool = True,
         generate_chart_spec: bool = True,
         chart_type: Optional[str] = None,
+        conversation_context: Optional[
+            Sequence[Mapping[str, str]]
+        ] = None,
     ) -> AgentResult:
         """
         Run the complete data-analysis pipeline.
@@ -266,6 +314,11 @@ class DataAnalystAgent:
         chart_type:
             Optional explicit chart type:
             bar, line, pie, or scatter.
+
+        conversation_context:
+            Optional, session-local pairs of prior questions and validated
+            SQL statements. It is used only while planning a follow-up;
+            every newly generated statement still passes validation.
 
         Returns
         -------
@@ -298,18 +351,21 @@ class DataAnalystAgent:
         question = question.strip()
 
         logger.info(
-            "Starting agent run | question=%s",
-            question,
+            "Starting agent run | question_length=%d",
+            len(question),
         )
 
         # ------------------------------------------------------------------
         # 1. Query planning
         # ------------------------------------------------------------------
 
+        planning_started_at = perf_counter()
+
         try:
             sql = self._query_planner.plan(
                 question=question,
                 dataset_profile=self._dataset_profile,
+                conversation_context=conversation_context,
             )
 
         except QueryPlannerError as exc:
@@ -335,8 +391,9 @@ class DataAnalystAgent:
         sql = sql.strip()
 
         logger.info(
-            "SQL generated successfully | sql=%s",
-            sql,
+            "Query planning completed | duration_ms=%.1f | sql_length=%d",
+            (perf_counter() - planning_started_at) * 1000,
+            len(sql),
         )
 
         # ------------------------------------------------------------------
@@ -371,6 +428,8 @@ class DataAnalystAgent:
 
             if not isinstance(table_name, str) or not table_name.strip():
                 table_name = DEFAULT_TABLE_NAME
+
+            validation_started_at = perf_counter()
 
             validation = validate_sql(
                 sql=sql,
@@ -426,14 +485,15 @@ class DataAnalystAgent:
                 )
 
             logger.info(
-                "SQL security validation passed | "
-                "cleaned_sql=%s",
-                validation.cleaned_sql,
+                "SQL security validation passed | duration_ms=%.1f",
+                (perf_counter() - validation_started_at) * 1000,
             )
 
             # ----------------------------------------------------------------
             # 3. Execute ONLY validated SQL
             # ----------------------------------------------------------------
+
+            execution_started_at = perf_counter()
 
             try:
                 query_result = executor.execute(
@@ -467,8 +527,9 @@ class DataAnalystAgent:
                 )
 
             logger.info(
-                "SQL execution completed | rows=%d | "
+                "SQL execution completed | duration_ms=%.1f | rows=%d | "
                 "truncated=%s",
+                (perf_counter() - execution_started_at) * 1000,
                 query_result.row_count,
                 query_result.truncated,
             )
@@ -478,8 +539,11 @@ class DataAnalystAgent:
             # ----------------------------------------------------------------
 
             explanation: Optional[str] = None
+            warnings: list[str] = []
 
             if generate_explanation:
+                explanation_started_at = perf_counter()
+
                 try:
                     explanation = explain_query_result(
                         sql=validation.cleaned_sql,
@@ -494,15 +558,19 @@ class DataAnalystAgent:
                         "Explanation generation failed: %s",
                         exc,
                     )
-
-                    raise AgentExplanationError(
-                        "Could not generate explanation: "
-                        + str(exc)
-                    ) from exc
-
-                logger.info(
-                    "Explanation generated successfully"
-                )
+                    warnings.append(
+                        "The query succeeded, but an explanation could not "
+                        "be generated."
+                    )
+                    logger.info(
+                        "Explanation generation failed | duration_ms=%.1f",
+                        (perf_counter() - explanation_started_at) * 1000,
+                    )
+                else:
+                    logger.info(
+                        "Explanation generation completed | duration_ms=%.1f",
+                        (perf_counter() - explanation_started_at) * 1000,
+                    )
 
             # ----------------------------------------------------------------
             # 5. Chart generation
@@ -511,6 +579,8 @@ class DataAnalystAgent:
             chart: Optional[Dict[str, Any]] = None
 
             if generate_chart_spec:
+                chart_started_at = perf_counter()
+
                 try:
                     chart = generate_chart(
                         query_result=query_result,
@@ -531,16 +601,20 @@ class DataAnalystAgent:
                         "Chart generation failed: %s",
                         exc,
                     )
-
-                    raise AgentChartError(
-                        "Could not generate chart specification: "
-                        + str(exc)
-                    ) from exc
-
-                logger.info(
-                    "Chart generation completed | generated=%s",
-                    chart is not None,
-                )
+                    warnings.append(
+                        "The query succeeded, but a visualization could not "
+                        "be generated."
+                    )
+                    logger.info(
+                        "Chart generation failed | duration_ms=%.1f",
+                        (perf_counter() - chart_started_at) * 1000,
+                    )
+                else:
+                    logger.info(
+                        "Chart generation completed | duration_ms=%.1f | generated=%s",
+                        (perf_counter() - chart_started_at) * 1000,
+                        chart is not None,
+                    )
 
             # ----------------------------------------------------------------
             # 6. Final result
@@ -553,14 +627,16 @@ class DataAnalystAgent:
                 query_result=query_result,
                 explanation=explanation,
                 chart=chart,
+                warnings=warnings,
             )
 
             logger.info(
                 "Agent run completed successfully | "
-                "rows=%d | explanation=%s | chart=%s",
+                "rows=%d | explanation=%s | chart=%s | warnings=%d",
                 query_result.row_count,
                 explanation is not None,
                 chart is not None,
+                len(warnings),
             )
 
             return result
@@ -579,6 +655,9 @@ def run_analysis(
     generate_explanation: bool = True,
     generate_chart_spec: bool = True,
     chart_type: Optional[str] = None,
+    conversation_context: Optional[
+        Sequence[Mapping[str, str]]
+    ] = None,
     max_result_rows: int = DEFAULT_MAX_RESULT_ROWS,
     max_explanation_rows: int = DEFAULT_MAX_EXPLANATION_ROWS,
     max_chart_rows: int = DEFAULT_MAX_CHART_ROWS,
@@ -607,4 +686,5 @@ def run_analysis(
         generate_explanation=generate_explanation,
         generate_chart_spec=generate_chart_spec,
         chart_type=chart_type,
+        conversation_context=conversation_context,
     )

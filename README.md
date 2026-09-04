@@ -36,6 +36,17 @@ Show the average gross by artist.
 
 The application dynamically generates SQL based on the uploaded dataset's schema.
 
+### 💬 Session-Local Follow-Up Questions
+
+After a successful analysis, ask a follow-up such as "Now show only the
+top 2." The planner receives up to three prior successful question and
+validated-SQL pairs from the current browser session.
+
+Conversation context is bounded, can be cleared from the sidebar, and is
+automatically reset when the active dataset changes. It is not durable
+storage, and every new SQL statement still passes the full validation and
+execution pipeline.
+
 ---
 
 ### 🧠 AI-Powered SQL Generation
@@ -78,10 +89,15 @@ The validator checks:
 - Read-only execution
 - Type conversions
 - Allowed SQL functions
+- Unqualified in-memory table references only
 
 Unsafe SQL is rejected before reaching DuckDB.
 
 This creates a security boundary between the LLM and the database.
+
+DuckDB is also configured as a second line of defense: external
+file/network access and temporary-disk spilling are disabled, while memory,
+thread, result-size, and query-time limits constrain execution resources.
 
 ---
 
@@ -230,7 +246,9 @@ The application follows a controlled pipeline that separates data processing, AI
 1. The user uploads a CSV dataset.
 2. The Data Loader reads and prepares the dataset.
 3. The Data Profiler analyzes the dataset structure and columns.
-4. The user asks an analytical question in natural language.
+4. The user asks an analytical question in natural language. For a
+   follow-up, the planner may also receive bounded context from prior
+   successful turns in the same browser session.
 5. The Query Planner receives the question and dataset profile.
 6. Amazon Bedrock generates a DuckDB-compatible SQL query.
 7. The generated SQL is treated as untrusted input.
@@ -461,6 +479,7 @@ ai-data-analyst-agent/
 │   │
 │   └── utils/
 │       ├── __init__.py
+│       ├── analysis_capacity.py
 │       ├── logger.py
 │       └── security.py
 │
@@ -471,6 +490,8 @@ ai-data-analyst-agent/
 ├── tests/
 │   ├── .gitkeep
 │   ├── test_agent.py
+│   ├── test_analysis_capacity.py
+│   ├── test_config.py
 │   ├── test_chart_generator.py
 │   ├── test_data_loader.py
 │   ├── test_data_profiler.py
@@ -479,10 +500,15 @@ ai-data-analyst-agent/
 │   ├── test_query_planner.py
 │   ├── test_schemas.py
 │   ├── test_security.py
-│   └── test_sql_executor.py
+│   ├── test_sql_executor.py
+│   └── test_ui_error_handling.py
 │
 ├── .env.example
 ├── .gitignore
+├── .streamlit/
+│   └── config.toml
+├── .dockerignore
+├── Dockerfile
 ├── pytest.ini
 ├── requirements.txt
 └── README.md
@@ -541,14 +567,41 @@ pip install -r requirements.txt
 
 Create a `.env` file based on `.env.example`.
 
-Example:
+At minimum, configure the Bedrock region and model/inference profile that
+your AWS account is allowed to invoke:
 
 ```text
 AWS_REGION=ap-south-1
 BEDROCK_MODEL_ID=apac.amazon.nova-lite-v1:0
 ```
 
+The application also supports these non-secret operational limits:
+
+```text
+APP_ENV=development
+LOG_LEVEL=INFO
+
+MAX_UPLOAD_SIZE_MB=200
+MAX_QUERY_RESULT_ROWS=10000
+QUERY_TIMEOUT_SECONDS=30
+MAX_CONCURRENT_ANALYSES=1
+
+BEDROCK_CONNECT_TIMEOUT_SECONDS=5
+BEDROCK_READ_TIMEOUT_SECONDS=45
+
+DUCKDB_MEMORY_LIMIT=512MB
+DUCKDB_THREAD_LIMIT=2
+```
+
+`MAX_CONCURRENT_ANALYSES` applies per Streamlit process. Keep it at `1`
+unless the deployment has been sized and tested for a higher concurrent
+workload.
+
 Configure AWS credentials using the AWS CLI or another secure AWS credential mechanism.
+
+For deployment, prefer an IAM role with the minimum Bedrock invocation
+permissions required by the selected model. The application never reads or
+stores AWS access keys itself.
 
 Never commit:
 
@@ -576,6 +629,69 @@ http://localhost:8501
 
 ---
 
+## 🐳 Running with Docker
+
+Docker packages the application with Python and its dependencies, while
+keeping credentials and local configuration outside the image. The image also
+includes the non-secret Streamlit theme configuration from
+`.streamlit/config.toml`.
+
+### 1. Build the image
+
+From the project root:
+
+```powershell
+docker build -t ai-data-analyst-agent .
+```
+
+### 2. Sign in to AWS locally
+
+If your AWS CLI profile uses the browser-based AWS sign-in flow, refresh it
+before starting the container:
+
+```powershell
+aws login --profile default
+```
+
+Complete the browser sign-in when prompted. If your organization uses a
+different credential mechanism, use its documented sign-in command instead.
+
+### 3. Run the container
+
+For local Windows development with the `default` AWS profile:
+
+```powershell
+docker run --rm -p 8501:8501 -e AWS_PROFILE=default -v "${env:USERPROFILE}\.aws:/home/appuser/.aws" ai-data-analyst-agent
+```
+
+Open the application at:
+
+```text
+http://localhost:8501
+```
+
+`0.0.0.0:8501` in the container log means the server is listening on every
+container network interface. It is not a browser address; use
+`localhost:8501` on your computer.
+
+The mounted AWS directory is intentionally writable during local development,
+because the AWS CLI may refresh browser-login tokens. Do not mount a personal
+credential directory into a shared or production container. In production,
+use a workload or IAM role instead.
+
+If you have created a local `.env` file, Docker can load its non-secret
+settings by adding `--env-file .env` to the command. Do not use that option
+unless the file actually exists, and never copy `.env` into the image.
+
+### Docker safety notes
+
+- The image runs as a non-root `appuser`.
+- `.dockerignore` excludes virtual environments, tests, local datasets,
+  `.env` files, Git metadata, and Streamlit secrets from the build context.
+- AWS credentials are not baked into the image.
+
+---
+
 ## 🧪 Testing
 
 The project includes automated tests covering the major application components.
@@ -584,12 +700,6 @@ Run the complete test suite:
 
 ```powershell
 pytest -q
-```
-
-Current regression result:
-
-```text
-262 passed, 1 skipped
 ```
 
 The test suite covers:
@@ -604,8 +714,48 @@ The test suite covers:
 - Pydantic schemas
 - SQL security validation
 - SQL execution
+- Configuration validation
+- Streamlit-safe error presentation
+- Analysis-capacity control
+- DuckDB timeout, interruption, and disk-spill protection
+- Session-local follow-up context and reset behavior
+- Offline end-to-end evaluation scenarios
 
 Security tests specifically verify that unsafe SQL operations are rejected.
+
+Run the application manually after changes that affect the interface:
+
+```powershell
+streamlit run app/main.py
+```
+
+Useful manual checks include replacing an uploaded CSV with another file of
+the same name, clearing the active dataset, an unavailable Bedrock service,
+and a query that reaches the configured result limit.
+
+---
+
+## 🚢 Deployment Checklist
+
+Before deploying, verify the following:
+
+- [ ] `APP_ENV=production` and non-development logging settings are set.
+- [ ] AWS credentials are supplied through a least-privilege IAM role or
+  deployment secret manager, never committed files.
+- [ ] The Bedrock model ID and AWS Region have been tested in the target
+  account and region.
+- [ ] Resource limits are sized for the deployment environment.
+- [ ] `pytest -q` passes in the deployment build.
+- [ ] `docker build -t ai-data-analyst-agent .` completes successfully.
+- [ ] The container starts and the app is reachable at `localhost:8501`.
+- [ ] The target deployment uses an IAM/workload role rather than a mounted
+  personal AWS profile.
+- [ ] The service runs behind the authentication, TLS, network, and
+  monitoring controls appropriate to its users and data sensitivity.
+
+The application is intentionally a single-process CSV analytics experience;
+it does not yet provide account-level tenant isolation or durable dataset
+storage.
 
 ---
 
@@ -703,8 +853,11 @@ Current limitations include:
 - Query generation depends on LLM quality
 - Complex analytical questions may require additional validation or refinement
 - Dataset size is limited by the local execution environment
-- Conversational multi-turn analytical context is not yet a core feature
 - Authentication and multi-user support are not implemented
+- Follow-up context is session-only, limited to three successful turns, and
+  is not durable query history
+- The app is intended for controlled, trusted CSV uploads rather than
+  arbitrary public file-processing workloads
 
 ---
 
@@ -727,7 +880,7 @@ Current
           ▼
 Future
    │
-   ├── Conversational Analytics
+   ├── Durable Query History
    ├── Multiple Dataset Support
    ├── Advanced Visualizations
    ├── Query History
@@ -789,14 +942,11 @@ https://github.com/Dark-Frost009
 
 ## 📌 Project Status
 
-**Functional and tested.**
+**Functional, security-hardened, and regression tested.**
 
 The core analytical pipeline is implemented and covered by an automated test suite.
 
-Latest regression test:
-
-```text
-262 passed, 1 skipped
-```
-
-The project is currently focused on strengthening the user experience, documentation, and production-readiness of the existing architecture.
+Run `pytest -q` to obtain the current regression result for your local
+environment. The project is now focused on the remaining showcase and
+production-readiness work: deployment packaging, observability integration,
+durable query history, and optional authentication.

@@ -305,6 +305,55 @@ def test_agent_calls_query_planner(
     assert result.query_result is mock_query_result
 
 
+def test_agent_forwards_conversation_context_to_planner(
+    dataframe,
+    dataset_profile,
+    mock_planner,
+    monkeypatch,
+    mock_query_result,
+):
+    """Follow-up context is passed to planning, not directly to execution."""
+
+    mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.execute.return_value = (
+        mock_query_result
+    )
+
+    monkeypatch.setattr(
+        "app.core.agent.SQLExecutor",
+        lambda *args, **kwargs: mock_executor,
+    )
+
+    agent = DataAnalystAgent(
+        dataframe=dataframe,
+        dataset_profile=dataset_profile,
+        query_planner=mock_planner,
+    )
+
+    context = [
+        {
+            "question": "What are total sales by product?",
+            "sql": (
+                "SELECT product, SUM(sales) AS total_sales "
+                "FROM dataset GROUP BY product"
+            ),
+        }
+    ]
+
+    agent.run(
+        "Now show only the top two.",
+        generate_explanation=False,
+        generate_chart_spec=False,
+        conversation_context=context,
+    )
+
+    mock_planner.plan.assert_called_once_with(
+        question="Now show only the top two.",
+        dataset_profile=dataset_profile,
+        conversation_context=context,
+    )
+
+
 def test_agent_wraps_planning_error(
     dataframe,
     dataset_profile,
@@ -601,11 +650,16 @@ def test_agent_wraps_explanation_error(
         query_planner=mock_planner,
     )
 
-    with pytest.raises(AgentExplanationError):
-        agent.run(
-            "Top products",
-            generate_chart_spec=False,
-        )
+    result = agent.run(
+        "Top products",
+        generate_chart_spec=False,
+    )
+
+    assert result.query_result is mock_query_result
+    assert result.explanation is None
+    assert result.warnings == [
+        "The query succeeded, but an explanation could not be generated."
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -747,11 +801,16 @@ def test_agent_wraps_chart_error(
         query_planner=mock_planner,
     )
 
-    with pytest.raises(AgentChartError):
-        agent.run(
-            "Top products",
-            generate_explanation=False,
-        )
+    result = agent.run(
+        "Top products",
+        generate_explanation=False,
+    )
+
+    assert result.query_result is mock_query_result
+    assert result.chart is None
+    assert result.warnings == [
+        "The query succeeded, but a visualization could not be generated."
+    ]
 
 
 # --------------------------------------------------------------------------

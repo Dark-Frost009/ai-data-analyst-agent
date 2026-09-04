@@ -8,6 +8,9 @@ since that's how this module is actually meant to be used.
 No Streamlit, Bedrock, or network involved; pure DuckDB + pandas.
 """
 
+import threading
+from unittest.mock import MagicMock
+
 import pandas as pd
 import pytest
 
@@ -243,41 +246,69 @@ def test_execute_blocks_file_access_even_with_hand_crafted_validation_result():
             executor.execute(forged)
 
 
+def test_connection_disables_temporary_disk_spilling():
+    """The DuckDB connection must not use host disk for query spill files."""
+
+    with SQLExecutor(_sample_df()) as executor:
+        temp_directory = executor._conn.execute(
+            "SELECT current_setting('temp_directory')"
+        ).fetchone()[0]
+
+        assert temp_directory == ""
+
+
 # --------------------------------------------------------------------------
 # Timeout
 # --------------------------------------------------------------------------
 
 
-def test_query_exceeding_timeout_is_cancelled():
+def test_query_exceeding_timeout_interrupts_the_connection():
     """
-    Verifies that SQLExecutor interrupts a query that runs longer than
-    the configured timeout.
+    Exercise the timeout path without depending on machine speed or a
+    deliberately expensive DuckDB query.
 
-    The query intentionally performs a large Cartesian product.
-
-    The timeout is short enough to exercise the interrupt path but not
-    so tiny that normal Python thread scheduling makes the test flaky.
+    The mocked query blocks until interrupt() releases it. This proves
+    the executor issues the connection-level cancellation request and
+    allows the worker to finish cleanly after the timeout.
     """
 
     df = _sample_df()
+    started = threading.Event()
+    release_worker = threading.Event()
 
-    with SQLExecutor(
+    executor = SQLExecutor(
         df,
-        timeout_seconds=0.05,
-    ) as executor:
+        timeout_seconds=0.1,
+    )
+    real_connection = executor._conn
+    connection = MagicMock()
 
-        forged = ValidationResult(
+    def blocking_execute(_sql):
+        started.set()
+        release_worker.wait(timeout=1)
+        return MagicMock()
+
+    connection.execute.side_effect = blocking_execute
+    connection.interrupt.side_effect = release_worker.set
+    executor._conn = connection
+
+    try:
+        validated = ValidationResult(
             is_valid=True,
-            cleaned_sql=(
-                "SELECT COUNT(*) "
-                "FROM range(10000000) t1, "
-                "range(100) t2"
-            ),
+            cleaned_sql="SELECT * FROM dataset",
             errors=[],
         )
 
         with pytest.raises(QueryTimeoutError):
-            executor.execute(forged)
+            executor.execute(validated)
+
+        assert started.is_set()
+        connection.interrupt.assert_called_once_with()
+        assert release_worker.wait(timeout=0.5)
+    finally:
+        # Restore and close the real connection created by the constructor.
+        executor._conn = real_connection
+        executor.close()
 
 
 # --------------------------------------------------------------------------
