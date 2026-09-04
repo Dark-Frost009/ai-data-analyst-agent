@@ -31,6 +31,8 @@ The Streamlit layer is responsible for:
 Business logic remains inside app.core.
 """
 
+import hmac
+import os
 import sys
 from pathlib import Path
 
@@ -82,6 +84,8 @@ from app.utils.logger import get_logger
 
 
 logger = get_logger(__name__)
+
+ACCESS_PASSWORD_ENVIRONMENT_VARIABLE = "APP_ACCESS_PASSWORD"
 
 
 # --------------------------------------------------------------------------
@@ -754,6 +758,51 @@ def _initialize_session_state() -> None:
     if "conversation_history" not in st.session_state:
         st.session_state.conversation_history = []
 
+    if "demo_access_granted" not in st.session_state:
+        st.session_state.demo_access_granted = False
+
+
+def _render_public_demo_access_gate() -> bool:
+    """Return whether this session may use an optionally protected demo."""
+
+    expected_password = os.getenv(ACCESS_PASSWORD_ENVIRONMENT_VARIABLE, "")
+
+    # Local development remains frictionless until a deployment explicitly
+    # supplies a non-empty secret through its environment or secret manager.
+    if not expected_password.strip():
+        return True
+
+    if st.session_state.demo_access_granted:
+        return True
+
+    st.title("🔒 Private Portfolio Demo")
+    st.caption(
+        "This demo is access-controlled to protect the paid AI service "
+        "used for analysis."
+    )
+
+    access_password = st.text_input(
+        "Demo access code",
+        type="password",
+        key="demo_access_password",
+    )
+
+    if st.button(
+        "Unlock demo",
+        type="primary",
+        use_container_width=True,
+    ):
+        if hmac.compare_digest(access_password, expected_password):
+            st.session_state.demo_access_granted = True
+            st.session_state.pop("demo_access_password", None)
+            logger.info("Portfolio demo access granted")
+            st.rerun()
+        else:
+            logger.warning("Portfolio demo access denied")
+            st.error("The access code is incorrect. Please try again.")
+
+    return False
+
 
 def _uploaded_file_signature(uploaded_file) -> tuple:
     """Return Streamlit upload metadata that changes for a new upload."""
@@ -1400,6 +1449,9 @@ def main() -> None:
     """Run the Streamlit application."""
 
     _initialize_session_state()
+
+    if not _render_public_demo_access_gate():
+        return
 
     logger.info(
         "AI Data Analyst Agent started | env=%s | region=%s",
