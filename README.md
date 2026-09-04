@@ -1,5 +1,7 @@
 # 🤖 AI Data Analyst Agent
 
+[![Test](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/workflows/ci.yml)
+
 An AI-powered data analysis application that allows users to upload CSV datasets and ask analytical questions using natural language.
 
 The application converts natural-language questions into DuckDB-compatible SQL using Amazon Bedrock, validates the generated SQL through an independent security layer, executes the validated query with DuckDB, and presents the results with tables, visualizations, and AI-generated explanations.
