@@ -2,6 +2,8 @@
 
 [![Test](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/workflows/ci.yml)
 
+[**Open the live demo**](https://groq-data-analyst.streamlit.app/) — access code required.
+
 An AI-powered data analysis application that allows users to upload CSV datasets and ask analytical questions using natural language.
 
 The application converts natural-language questions into DuckDB-compatible SQL using Groq, validates the generated SQL through an independent security layer, executes the validated query with DuckDB, and presents the results with tables, visualizations, and AI-generated explanations.
@@ -207,7 +209,7 @@ The application follows a controlled pipeline that separates data processing, AI
                            ▼
                   ┌─────────────────┐
                   │  Query Planner  │
-                  │  Groq │
+                  │      Groq       │
                   └────────┬────────┘
                            │
                            ▼
@@ -871,7 +873,6 @@ Future
    ├── Advanced Visualizations
    ├── Query History
    ├── Result Caching
-   ├── Cloud Deployment
    ├── Authentication
    └── Production Monitoring
 ```
@@ -928,11 +929,14 @@ https://github.com/Dark-Frost009
 
 ## 📌 Project Status
 
-**Functional, security-hardened, and regression tested.**
+**Deployed on Streamlit Community Cloud with Groq and a shared password gate.**
 
-The core analytical pipeline is implemented and covered by an automated test suite.
+- Live app: [groq-data-analyst.streamlit.app](https://groq-data-analyst.streamlit.app/).
+- Local validation: 357 tests passed on Python 3.12.7, with 88.49% coverage.
+- [GitHub Actions run #14](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/runs/34142933104) passed Python 3.11 tests and Docker build/startup health checks for commit `4647d8f`.
+- A manual live check using the bundled synthetic CSV returned the expected artists **A and C** for “Which artists in year 2015 had gross over $5 million?” The public password gate was also checked independently.
 
-Run `pytest -q` to obtain the current regression result for your local
-environment. The project is now focused on the remaining showcase and
-production-readiness work: deployment packaging, observability integration,
-durable query history, and optional authentication.
+This is a deployment smoke check, not a comprehensive model-accuracy evaluation.
+Offline fixtures use fixed model responses and validate the surrounding pipeline.
+Run `pytest -q` for current local results. Remaining work includes individual
+user accounts, durable query history and production monitoring.
