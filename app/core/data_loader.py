@@ -459,6 +459,11 @@ def _normalize_column_names(
 
         normalized_columns.append(column_text)
 
+    if len({name.casefold() for name in normalized_columns}) != len(normalized_columns):
+        raise CSVParsingError("CSV column names must be unique after whitespace and case normalization. Rename duplicate headers and upload again.")
+    if any(not name for name in normalized_columns):
+        raise CSVParsingError("CSV column names must not be blank.")
+
     # Log only when normalization actually changes a column name.
     original_columns = [str(column) for column in df.columns]
 

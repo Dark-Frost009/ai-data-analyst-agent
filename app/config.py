@@ -5,10 +5,6 @@ All configuration values are loaded from environment variables (via a
 local .env file in development, or real environment variables in
 production/deployment). No secrets are read, stored, or hardcoded here.
 
-AWS credentials specifically are NEVER handled by this module — boto3
-resolves them on its own via the standard AWS credential chain
-(`aws configure`, an IAM role, or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-environment variables set outside of this project).
 """
 
 import os
@@ -47,27 +43,14 @@ class AppConfig:
     app_env: str = "development"
     log_level: str = "INFO"
 
-    # --- AWS / Amazon Bedrock ---
-    # Only non-secret settings live here (region, model id). Credentials
-    # are intentionally out of scope for this class.
-    #
-    # NOTE: many Bedrock models cannot be invoked on-demand using the bare
-    # model ID — they require an *inference profile* ID instead
-    # (regionally prefixed, e.g. "us.", "eu.", "apac.", or account-wide
-    # "global."), or they raise ValidationException: "... with on-demand
-    # throughput isn't supported". The values below are the region +
-    # inference profile ID confirmed working via a live Bedrock smoke
-    # test. Verify under Bedrock -> Cross-region inference in the AWS
-    # console if this ever needs to change.
-    aws_region: str = "ap-south-1"
-    bedrock_model_id: str = "apac.amazon.nova-lite-v1:0"
-    bedrock_connect_timeout_seconds: int = 5
-    bedrock_read_timeout_seconds: int = 45
+    # --- Language model (credentials are resolved only by the adapter) ---
+    llm_provider: str = "groq"
+    llm_model_id: str = "openai/gpt-oss-20b"
+    llm_connect_timeout_seconds: int = 5
+    llm_read_timeout_seconds: int = 45
 
     # --- Data & query limits ---
-    # Not enforced yet (added in the security/execution milestones), but
-    # centralized here now so every future component reads limits from a
-    # single source of truth instead of redefining its own constants.
+    # Shared limits enforced by the loader, executor and capacity guard.
     max_upload_size_mb: int = 200
     max_query_result_rows: int = 10_000
     query_timeout_seconds: int = 30
@@ -83,8 +66,8 @@ class AppConfig:
     def __post_init__(self) -> None:
         """Fail fast when deployment configuration is invalid."""
         positive_values = {
-            "bedrock_connect_timeout_seconds": self.bedrock_connect_timeout_seconds,
-            "bedrock_read_timeout_seconds": self.bedrock_read_timeout_seconds,
+            "llm_connect_timeout_seconds": self.llm_connect_timeout_seconds,
+            "llm_read_timeout_seconds": self.llm_read_timeout_seconds,
             "max_upload_size_mb": self.max_upload_size_mb,
             "max_query_result_rows": self.max_query_result_rows,
             "query_timeout_seconds": self.query_timeout_seconds,
@@ -101,8 +84,8 @@ class AppConfig:
         required_text_values = {
             "app_name": self.app_name,
             "app_env": self.app_env,
-            "aws_region": self.aws_region,
-            "bedrock_model_id": self.bedrock_model_id,
+            "llm_provider": self.llm_provider,
+            "llm_model_id": self.llm_model_id,
             "duckdb_memory_limit": self.duckdb_memory_limit,
         }
 
@@ -118,15 +101,15 @@ class AppConfig:
         return cls(
             app_env=os.getenv("APP_ENV", cls.app_env),
             log_level=os.getenv("LOG_LEVEL", cls.log_level).upper(),
-            aws_region=os.getenv("AWS_REGION", cls.aws_region),
-            bedrock_model_id=os.getenv("BEDROCK_MODEL_ID", cls.bedrock_model_id),
-            bedrock_connect_timeout_seconds=_get_int(
-                "BEDROCK_CONNECT_TIMEOUT_SECONDS",
-                cls.bedrock_connect_timeout_seconds,
+            llm_provider=os.getenv("LLM_PROVIDER", cls.llm_provider),
+            llm_model_id=os.getenv("LLM_MODEL_ID", cls.llm_model_id),
+            llm_connect_timeout_seconds=_get_int(
+                "LLM_CONNECT_TIMEOUT_SECONDS",
+                cls.llm_connect_timeout_seconds,
             ),
-            bedrock_read_timeout_seconds=_get_int(
-                "BEDROCK_READ_TIMEOUT_SECONDS",
-                cls.bedrock_read_timeout_seconds,
+            llm_read_timeout_seconds=_get_int(
+                "LLM_READ_TIMEOUT_SECONDS",
+                cls.llm_read_timeout_seconds,
             ),
             max_upload_size_mb=_get_int("MAX_UPLOAD_SIZE_MB", cls.max_upload_size_mb),
             max_query_result_rows=_get_int(

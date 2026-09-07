@@ -2,7 +2,7 @@
 Natural-language query planner for the AI Data Analyst Agent.
 
 Converts a user's natural-language analytical question into exactly one
-DuckDB-compatible SQL SELECT statement using Amazon Bedrock.
+DuckDB-compatible SQL SELECT statement through the LLMClient interface.
 
 Architectural boundary:
 
@@ -24,12 +24,16 @@ QueryPlanner NEVER executes SQL and NEVER talks directly to DuckDB.
 import re
 from typing import Mapping, Optional, Sequence
 
+import sqlglot
+from sqlglot import exp
+
 from app.core.llm_client import (
-    BedrockClient,
-    BedrockClientError,
-    get_bedrock_client,
+    LLMClient,
+    LLMClientError,
+    get_llm_client,
 )
 from app.models.schemas import DatasetProfile
+from app.prompts.query_planner import DEFAULT_SYSTEM_PROMPT
 from app.utils.logger import get_logger
 
 
@@ -66,395 +70,6 @@ class EmptyQuestionError(QueryPlannerError):
 # ============================================================================
 
 
-DEFAULT_SYSTEM_PROMPT = """
-You are an expert data analyst and DuckDB SQL query planner.
-
-Your job is to convert a user's natural-language analytical question into
-ONE safe, read-only DuckDB-compatible SQL SELECT statement.
-
-The dataset is available as a table named `dataset`.
-
-# CORE RULES
-
-1. Return exactly ONE SQL SELECT statement.
-2. Never return explanations.
-3. Never return Markdown.
-4. Never return code fences.
-5. Never return multiple SQL statements.
-6. Never use INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE,
-   COPY, ATTACH, DETACH, INSTALL, LOAD, CALL, EXPORT, IMPORT, or any
-   other data-modifying, data-definition, file-access, network-access,
-   extension, or administrative operation.
-7. Use ONLY columns that actually exist in the supplied dataset profile.
-8. NEVER invent columns.
-9. NEVER rename or normalize a column name.
-10. Preserve the exact spelling of every column.
-11. Preserve capitalization.
-12. Preserve spaces.
-13. Preserve underscores.
-14. Preserve punctuation.
-15. Preserve parentheses and brackets.
-16. Preserve hyphens.
-17. Preserve Unicode characters.
-18. Preserve Unicode whitespace.
-19. When referencing a column, surround its exact name with double quotes.
-20. Query ONLY the table `dataset`.
-21. Use DuckDB-compatible SQL.
-22. Handle NULL values sensibly.
-23. Return ONLY the SQL SELECT statement.
-
-# AGGREGATION AND GROUPING
-
-When the user asks for a metric such as:
-
-- average
-- total
-- sum
-- count
-- minimum
-- maximum
-
-for each entity/category/group, aggregate at that entity/category/group
-level.
-
-For example, if the user asks:
-
-"top 3 artists by average gross"
-
-the query MUST:
-
-1. Group rows by "Artist".
-2. Calculate AVG(...) of "Average gross" for each artist.
-3. Order the artist-level averages from highest to lowest.
-4. Return only the requested top 3 artists.
-
-The query should have the equivalent structure:
-
-SELECT
-    "Artist",
-    AVG(...) AS "Average Gross"
-FROM "dataset"
-GROUP BY "Artist"
-ORDER BY "Average Gross" DESC
-LIMIT 3
-
-Do NOT simply sort individual rows by "Average gross" and LIMIT 3.
-
-Similarly:
-
-"top 5 artists by total gross"
-
-means:
-
-GROUP BY "Artist"
-SUM(...) AS ...
-ORDER BY ... DESC
-LIMIT 5
-
-"artists with average gross greater than $3 million"
-
-means:
-
-GROUP BY "Artist"
-AVG(...) AS ...
-HAVING AVG(...) > 3000000
-
-"highest average gross by artist"
-
-means:
-
-GROUP BY "Artist"
-AVG(...) AS ...
-ORDER BY ... DESC
-
-When the question asks for an aggregate metric "by", "per", or "for each"
-entity/category, the entity/category normally belongs in GROUP BY.
-
-Important distinction:
-
-- "Show the top 3 grossing tours" may refer to individual tour rows.
-- "Show the top 3 artists by average gross" refers to one aggregated row
-  per artist.
-- "For each artist, calculate average gross" explicitly requires grouping.
-- "Which artists have average gross greater than $3 million" requires
-  grouping by artist and filtering the aggregate with HAVING.
-
-# NUMERIC THRESHOLDS
-
-When the user explicitly provides a numeric threshold, preserve its exact
-mathematical meaning.
-
-Natural-language quantities:
-
-1 thousand = 1000
-1 million = 1000000
-1 billion = 1000000000
-
-Examples:
-
-$5 million = 5000000
-$10 million = 10000000
-$2.5 million = 2500000
-$750 thousand = 750000
-$1 billion = 1000000000
-
-If the user says:
-
-"greater than $5 million"
-
-the SQL comparison MUST use:
-
-> 5000000
-
-If the user says:
-
-"at least $5 million"
-
-use:
-
->= 5000000
-
-If the user says:
-
-"less than $5 million"
-
-use:
-
-< 5000000
-
-If the user says:
-
-"at most $5 million"
-
-use:
-
-<= 5000000
-
-Never substitute a different numeric threshold.
-
-# NUMERIC COLUMN HANDLING
-
-If a column is already numeric, use it directly.
-
-If a numeric-looking column is VARCHAR/text, use:
-
-TRY_CAST("column" AS DOUBLE)
-
-For numeric text containing commas:
-
-TRY_CAST(
-    REPLACE("column", ',', '')
-    AS DOUBLE
-)
-
-# CURRENCY HANDLING
-
-Currency values may appear as text.
-
-For example:
-
-"$1,234.50"
-
-Safely clean them using nested REPLACE calls.
-
-Example:
-
-TRY_CAST(
-    REPLACE(
-        REPLACE(
-            CAST("column" AS VARCHAR),
-            ',',
-            ''
-        ),
-        '$',
-        ''
-    )
-    AS DOUBLE
-)
-
-Do NOT perform currency conversion unless the user explicitly asks for it.
-
-# PERCENTAGE HANDLING
-
-For text percentages such as:
-
-"25%"
-"12.5%"
-"100%"
-
-remove the percentage symbol before converting:
-
-TRY_CAST(
-    REPLACE(
-        CAST("column" AS VARCHAR),
-        '%',
-        ''
-    )
-    AS DOUBLE
-)
-
-Only divide by 100 when the user explicitly requests a proportion between
-0 and 1.
-
-# DATE HANDLING
-
-If a date column is VARCHAR/text:
-
-TRY_CAST("date_column" AS DATE)
-
-For timestamps:
-
-TRY_CAST("timestamp_column" AS TIMESTAMP)
-
-For monthly analysis:
-
-DATE_TRUNC(
-    'MONTH',
-    TRY_CAST("date_column" AS DATE)
-)
-
-Do not apply DATE_TRUNC, DATE_PART, or EXTRACT directly to VARCHAR dates.
-
-# AGGREGATIONS
-
-Use:
-
-SUM
-AVG
-COUNT
-MIN
-MAX
-ROUND
-
-Use GROUP BY when aggregation requires it.
-
-Use HAVING when filtering based on an aggregate value.
-
-Do NOT use WHERE to filter an aggregate result when HAVING is required.
-
-Examples:
-
-"artists with average gross above $3 million"
-
-must use:
-
-GROUP BY "Artist"
-HAVING AVG(...) > 3000000
-
-"top 3 artists by average gross"
-
-must use:
-
-GROUP BY "Artist"
-ORDER BY AVG(...) DESC
-LIMIT 3
-
-# TOP / BOTTOM / RANKING
-
-For top/highest questions:
-
-ORDER BY value DESC
-LIMIT N
-
-For bottom/lowest questions:
-
-ORDER BY value ASC
-LIMIT N
-
-For questions asking for top/bottom entities BY an aggregate metric,
-first calculate the metric at the entity level.
-
-Examples:
-
-"top 3 artists by average gross"
-
-requires:
-
-GROUP BY "Artist"
-AVG(...)
-ORDER BY average DESC
-LIMIT 3
-
-"top 5 artists by total gross"
-
-requires:
-
-GROUP BY "Artist"
-SUM(...)
-ORDER BY total DESC
-LIMIT 5
-
-For numeric VARCHAR columns, clean and safely convert the value before
-ordering or aggregating.
-
-# NULL HANDLING
-
-Do not automatically convert NULL to zero.
-
-Use COALESCE only when zero is logically appropriate.
-
-# AVAILABLE SQL FUNCTIONS
-
-SUM
-AVG
-COUNT
-MIN
-MAX
-ROUND
-ABS
-CEIL
-CEILING
-FLOOR
-LOWER
-UPPER
-TRIM
-LENGTH
-CONCAT
-REPLACE
-COALESCE
-NULLIF
-DATE_TRUNC
-DATETRUNC
-TIMESTAMPTRUNC
-DATE_PART
-DATEPART
-EXTRACT
-CAST
-TRY_CAST
-CASE
-
-Do NOT use:
-
-REGEXP_REPLACE
-REGEXP_MATCHES
-REGEXP_EXTRACT
-SUBSTRING
-STRPOS
-FORMAT
-IF
-
-or any other function not explicitly allowed.
-
-# SQL SAFETY
-
-The generated query must:
-
-- Start with SELECT.
-- Query only dataset.
-- Be read-only.
-- Contain exactly one SQL statement.
-- Never modify data.
-- Never access files.
-- Never access URLs.
-- Never load extensions.
-- Never install extensions.
-- Never attach databases.
-- Never query external tables.
-- Never execute procedures.
-- Never contain multiple statements.
-
-Return ONLY the SQL SELECT statement.
-""".strip()
 
 
 # ============================================================================
@@ -471,10 +86,10 @@ class QueryPlanner:
 
     def __init__(
         self,
-        llm_client: Optional[BedrockClient] = None,
+        llm_client: Optional[LLMClient] = None,
         system_prompt: Optional[str] = None,
     ):
-        self._llm_client = llm_client or get_bedrock_client()
+        self._llm_client = llm_client or get_llm_client()
         self._system_prompt = (
             system_prompt or DEFAULT_SYSTEM_PROMPT
         )
@@ -522,11 +137,11 @@ class QueryPlanner:
             response = self._llm_client.generate_text(
                 prompt=prompt,
                 system_prompt=self._system_prompt,
-                max_tokens=1024,
+                max_tokens=2048,
                 temperature=0.0,
             )
-        except BedrockClientError as exc:
-            logger.warning("Bedrock query-planning request failed: %s", exc)
+        except LLMClientError as exc:
+            logger.warning("LLM query-planning request failed: %s", exc)
             raise QueryPlanningError(
                 "The language model could not generate an analysis plan."
             ) from exc
@@ -823,50 +438,14 @@ Return ONLY the SQL SELECT statement.
                 "The LLM response did not contain a SQL query."
             )
 
-        # Planner requires SELECT.
-        if not re.match(
-            r"^\s*SELECT\b",
-            sql,
-            flags=re.IGNORECASE,
-        ):
-            raise QueryPlanningError(
-                "The LLM response does not contain a SELECT statement."
-            )
-
-        # Reject multiple statements.
-        if ";" in sql:
-            raise QueryPlanningError(
-                "The LLM response contains multiple SQL statements."
-            )
-
-        dangerous_keywords = (
-            "INSERT",
-            "UPDATE",
-            "DELETE",
-            "DROP",
-            "ALTER",
-            "CREATE",
-            "TRUNCATE",
-            "COPY",
-            "ATTACH",
-            "DETACH",
-            "INSTALL",
-            "LOAD",
-            "CALL",
-            "EXPORT",
-            "IMPORT",
-        )
-
-        for keyword in dangerous_keywords:
-            if re.search(
-                rf"\b{keyword}\b",
-                sql,
-                flags=re.IGNORECASE,
-            ):
-                raise QueryPlanningError(
-                    "The generated SQL contains a forbidden SQL "
-                    f"operation: {keyword}"
-                )
+        try:
+            statements = sqlglot.parse(sql, read="duckdb")
+        except sqlglot.errors.ParseError:
+            raise QueryPlanningError("The model returned invalid SQL.") from None
+        if len(statements) != 1 or not isinstance(statements[0], exp.Select):
+            raise QueryPlanningError("The model must return one SELECT statement; set operations are unsupported.")
+        # Full table/function/operation validation remains the independent
+        # security layer's responsibility. Literals are never keyword-scanned.
 
         return sql
 
@@ -901,83 +480,47 @@ Return ONLY the SQL SELECT statement.
         if threshold is None:
             return sql
 
-        # Find numeric comparisons, keeping enough of the left-hand
-        # expression to identify the monetary comparison. A generated
-        # query may contain unrelated numeric predicates (for example a
-        # year filter) before the monetary predicate.
-        comparison_pattern = re.compile(
-            r"(?P<expression>[^<>=!\n]+?)"
-            r"\s*(?P<operator>>=|<=|<>|!=|>|<|=)"
-            r"\s*"
-            r"(?P<number>\d+(?:\.\d+)?)"
-            r"\b",
-            flags=re.IGNORECASE,
-        )
-
-        matches = list(comparison_pattern.finditer(sql))
-
-        if not matches:
+        # Preserve the user's no-match fix: ambiguity must leave SQL alone.
+        # SQL nodes keep projection names, strings and neighboring predicates
+        # out of the decision. Only one plainly identified monetary predicate
+        # and one quantity may be corrected.
+        quantities = re.findall(r"\$?\s*\d+(?:,\d{3})*(?:\.\d+)?\s*(?:billion|bn|b|million|mn|m|thousand|k)\b", question, re.I)
+        if len(quantities) != 1:
             return sql
-
-        # Prefer a comparison whose expression contains a monetary concept
-        # explicitly mentioned in the question (e.g. ``gross`` in
-        # ``average gross greater than $5 million``). This prevents an
-        # unrelated predicate such as ``Year > 2015`` from being rewritten.
-        monetary_terms = {
-            "amount",
-            "cost",
-            "earnings",
-            "fee",
-            "gross",
-            "income",
-            "price",
-            "profit",
-            "revenue",
-            "salary",
-            "sales",
-            "spend",
-            "ticket",
-            "value",
-        }
-
-        question_words = set(
-            re.findall(r"[a-z]+", question.lower())
-        )
-        relevant_terms = monetary_terms & question_words
-
-        match = None
-
-        if relevant_terms:
-            for candidate in matches:
-                expression_words = set(
-                    re.findall(
-                        r"[a-z]+",
-                        candidate.group("expression").lower(),
-                    )
-                )
-
-                if relevant_terms & expression_words:
-                    match = candidate
-                    break
-
-        # Preserve the previous behavior when the question does not contain
-        # a recognizable monetary term: use the first numeric comparison.
-        if match is None:
-            match = matches[0]
-            
-        old_number = match.group("number")
-        new_number = str(threshold)
-
-        if old_number == new_number:
+        terms = {"amount", "cost", "earnings", "fee", "gross", "income",
+                 "price", "profit", "revenue", "salary", "sales", "spend",
+                 "ticket", "value"}
+        relevant = terms & set(re.findall(r"[a-z]+", question.lower()))
+        if not relevant:
             return sql
-
-        corrected_sql = (
-            sql[:match.start("number")]
-            + new_number
-            + sql[match.end("number"):]
-        )
-
-        return corrected_sql
+        try:
+            tree = sqlglot.parse_one(sql, read="duckdb")
+        except sqlglot.errors.ParseError:
+            return sql
+        candidates = []
+        for predicate in tree.find_all(exp.GT, exp.GTE, exp.LT, exp.LTE, exp.EQ):
+            if not predicate.find_ancestor(exp.Where, exp.Having):
+                continue
+            number = predicate.expression
+            if not isinstance(number, exp.Literal) or not number.is_number:
+                continue
+            columns = list(predicate.this.find_all(exp.Column))
+            # Ratios, subqueries and multi-column arithmetic are ambiguous.
+            if len(columns) != 1 or predicate.this.find(exp.Subquery, exp.Binary):
+                continue
+            if any(not isinstance(node, (exp.Cast, exp.TryCast, exp.Replace,
+                                          exp.Avg, exp.Sum, exp.Min, exp.Max))
+                   for node in predicate.this.find_all(exp.Func)):
+                continue
+            words = set(re.findall(r"[a-z]+", columns[0].name.lower()))
+            if relevant & words:
+                candidates.append(number)
+        if len(candidates) != 1:
+            return sql
+        if candidates[0].this == str(threshold):
+            return sql
+        candidates[0].replace(exp.Literal.number(threshold))
+        return tree.sql(dialect="duckdb")
 
     # ----------------------------------------------------------------------
     # Monetary quantity parser

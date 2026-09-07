@@ -1,7 +1,7 @@
 """
 Tests for app.utils.security.validate_sql.
 
-No DuckDB, Bedrock, or pandas involved — this is pure SQL-text-in,
+No DuckDB, LLM, or pandas involved — this is pure SQL-text-in,
 ValidationResult-out testing.
 
 A note on error-code strictness: most rejection tests assert one exact
@@ -548,3 +548,27 @@ def test_validate_sql_rejects_cte_shadowing_with_unregistered_table():
 
     assert result.is_valid is False
     assert result.errors[0].code == "DISALLOWED_TABLE_REFERENCE"
+
+def test_nested_cte_does_not_authorize_outer_table():
+    result = validate_sql('SELECT * FROM secret JOIN (WITH secret AS (SELECT * FROM dataset) SELECT * FROM secret) x ON 1 = 1', allowed_tables=['dataset'])
+    assert not result.is_valid
+
+
+def test_nested_cte_is_allowed_within_its_scope():
+    result = validate_sql('SELECT * FROM (WITH local_rows AS (SELECT * FROM dataset) SELECT * FROM local_rows) x', allowed_tables=['dataset'])
+    assert result.is_valid
+
+
+@pytest.mark.parametrize('operator', ['AND','OR'])
+def test_boolean_connectors_validate_children(operator):
+    safe = validate_sql(f'SELECT * FROM dataset WHERE sales > 1 {operator} sales < 5', allowed_tables=['dataset'])
+    assert safe.is_valid
+    unsafe = validate_sql(f'SELECT * FROM dataset WHERE sales > 1 {operator} RANDOM() > 0', allowed_tables=['dataset'])
+    assert not unsafe.is_valid
+
+
+@pytest.mark.parametrize('operator', ['UNION ALL','EXCEPT','INTERSECT'])
+def test_nested_set_operations_are_explicitly_unsupported(operator):
+    result = validate_sql(f'SELECT * FROM (SELECT * FROM dataset {operator} SELECT * FROM dataset) x', allowed_tables=['dataset'])
+    assert not result.is_valid
+    assert result.errors[0].code == 'UNSUPPORTED_SET_OPERATION'

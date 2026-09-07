@@ -1,7 +1,7 @@
 """
 Tests for app.core.data_profiler.profile_dataframe.
 
-No Streamlit, AWS, or DuckDB involved — these run purely against pandas
+No Streamlit, external provider, or DuckDB involved — these run purely against pandas
 DataFrames constructed in-memory.
 """
 

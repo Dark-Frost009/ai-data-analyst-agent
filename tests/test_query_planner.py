@@ -1,9 +1,9 @@
 """
 Tests for app.core.query_planner.QueryPlanner.
 
-These tests use a mocked BedrockClient, so they do not require:
-- AWS credentials
-- Bedrock access
+These tests use a mocked LLMClient, so they do not require:
+- external provider credentials
+- LLM access
 - network access
 - Streamlit
 - DuckDB
@@ -30,7 +30,7 @@ from app.core.query_planner import (
     QueryPlanner,
     QueryPlanningError,
 )
-from app.core.llm_client import BedrockClientError
+from app.core.llm_client import LLMClientError
 from app.models.schemas import (
     ColumnProfile,
     DatasetProfile,
@@ -105,7 +105,7 @@ def _dataset_profile() -> DatasetProfile:
 
 
 def _mock_llm(response: str) -> MagicMock:
-    """Create a mocked Bedrock client returning the supplied response."""
+    """Create a mocked LLM client returning the supplied response."""
     client = MagicMock()
     client.generate_text.return_value = response
     return client
@@ -170,7 +170,7 @@ def test_plan_uses_zero_temperature():
     kwargs = llm.generate_text.call_args.kwargs
 
     assert kwargs["temperature"] == 0.0
-    assert kwargs["max_tokens"] == 1024
+    assert kwargs["max_tokens"] == 2048
 
 
 def test_plan_uses_system_prompt():
@@ -286,7 +286,7 @@ def test_prompt_tells_llm_to_use_dataset_table():
     kwargs = llm.generate_text.call_args.kwargs
     prompt = kwargs["prompt"]
 
-    assert "`dataset`" in prompt
+    assert "dataset" in prompt
 
 
 def test_prompt_includes_prior_turn_context_before_current_question():
@@ -320,7 +320,7 @@ def test_prompt_includes_prior_turn_context_before_current_question():
 
 
 def test_prompt_bounds_history_to_recent_turns_and_character_limits():
-    """Long sessions cannot grow the Bedrock prompt without bound."""
+    """Long sessions cannot grow the LLM prompt without bound."""
 
     llm = _mock_llm("SELECT COUNT(*) FROM dataset")
     planner = QueryPlanner(llm_client=llm)
@@ -621,25 +621,25 @@ def test_rejects_select_followed_by_second_statement():
 
 def test_llm_client_error_is_not_silently_swallowed():
     """
-    BedrockClient errors should propagate rather than being disguised as
+    LLMClient errors should propagate rather than being disguised as
     successful SQL generation.
     """
     llm = MagicMock()
-    llm.generate_text.side_effect = RuntimeError("Bedrock unavailable")
+    llm.generate_text.side_effect = RuntimeError("LLM unavailable")
 
     planner = QueryPlanner(llm_client=llm)
 
-    with pytest.raises(RuntimeError, match="Bedrock unavailable"):
+    with pytest.raises(RuntimeError, match="LLM unavailable"):
         planner.plan(
             "How many rows are there?",
             _dataset_profile(),
         )
 
 
-def test_bedrock_client_error_becomes_query_planning_error():
-    """Typed Bedrock failures must reach the UI as a planning failure."""
+def test_llm_client_error_becomes_query_planning_error():
+    """Typed LLM failures must reach the UI as a planning failure."""
     llm = MagicMock()
-    llm.generate_text.side_effect = BedrockClientError("Bedrock unavailable")
+    llm.generate_text.side_effect = LLMClientError("LLM unavailable")
 
     planner = QueryPlanner(llm_client=llm)
 
@@ -718,7 +718,7 @@ def test_correct_explicit_monetary_threshold_does_not_modify_prior_year_comparis
 
     sql = """
         SELECT *
-        FROM `dataset`
+        FROM dataset
         WHERE "Year" > 2015
           AND CAST(REPLACE(REPLACE("Average gross", '$', ''), ',', '') AS DOUBLE) > 1000000
     """
@@ -738,7 +738,7 @@ def test_correct_explicit_monetary_threshold_handles_unrelated_numeric_compariso
 
     sql = """
         SELECT *
-        FROM `dataset`
+        FROM dataset
         WHERE "Shows" >= 10
           AND CAST(REPLACE(REPLACE("Average gross", '$', ''), ',', '') AS DOUBLE) > 1000000
     """
@@ -758,7 +758,7 @@ def test_correct_explicit_monetary_threshold_preserves_first_monetary_comparison
 
     sql = """
         SELECT *
-        FROM `dataset`
+        FROM dataset
         WHERE CAST(REPLACE(REPLACE("Average gross", '$', ''), ',', '') AS DOUBLE) > 1000000
     """
 
@@ -776,7 +776,7 @@ def test_correct_explicit_monetary_threshold_handles_greater_equal():
 
     sql = """
         SELECT *
-        FROM `dataset`
+        FROM dataset
         WHERE "Year" >= 2015
           AND CAST(REPLACE(REPLACE("Average gross", '$', ''), ',', '') AS DOUBLE) >= 1000000
     """
@@ -789,3 +789,34 @@ def test_correct_explicit_monetary_threshold_handles_greater_equal():
     assert '"Year" >= 2015' in corrected
     assert 'AS DOUBLE) >= 5000000' in corrected
     assert 'AS DOUBLE) >= 1000000' not in corrected
+
+@pytest.mark.parametrize('term', ['box office', 'budget', 'turnover', 'grossing'])
+def test_unknown_money_terms_preserve_all_filters(term):
+    sql = f'SELECT "{term}" FROM dataset WHERE "Year" = 2015 AND "{term}" > 1000000'
+    assert QueryPlanner._correct_explicit_monetary_threshold(f'Which in year 2015 had {term} over $5 million?',sql) == sql
+
+
+@pytest.mark.parametrize('sql', [
+    'SELECT gross FROM dataset WHERE "Year" > 2015',
+    "SELECT * FROM dataset WHERE label = 'gross' AND Shows > 10",
+    'SELECT * FROM dataset WHERE gross > 100 AND revenue > 200',
+    'SELECT * FROM dataset WHERE gross / Shows > 100',
+])
+def test_ambiguous_money_predicates_are_unchanged(sql):
+    assert QueryPlanner._correct_explicit_monetary_threshold('gross and revenue over $5 million',sql) == sql
+
+
+def test_multiple_money_quantities_are_unchanged():
+    sql = 'SELECT * FROM dataset WHERE gross > 100 AND gross < 200'
+    assert QueryPlanner._correct_explicit_monetary_threshold('gross between $5 million and $10 million',sql) == sql
+
+
+@pytest.mark.parametrize('value', ['DELETE','DROP','a;b'])
+def test_sql_literals_are_not_operations(value):
+    sql = f"SELECT * FROM dataset WHERE status = '{value}'"
+    assert QueryPlanner._extract_sql(sql) == sql
+
+
+def test_count_of_monetary_column_is_not_a_monetary_threshold():
+    sql = 'SELECT COUNT(gross) FROM dataset HAVING COUNT(gross) > 10'
+    assert QueryPlanner._correct_explicit_monetary_threshold('count gross values over $5 million',sql) == sql

@@ -2,8 +2,8 @@
 Tests for app.core.chart_generator.
 
 These tests are completely local:
-    - no AWS
-    - no Bedrock
+    - no external provider
+    - no LLM
     - no Streamlit
     - no DuckDB
     - no network access

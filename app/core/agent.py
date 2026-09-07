@@ -25,7 +25,7 @@ responsibility inside its own component.
 
 Agent does NOT:
 - execute raw/unvalidated SQL,
-- communicate directly with AWS/Bedrock,
+- communicate directly with LLM provider,
 - render Streamlit UI,
 - contain SQL security rules,
 - generate SQL itself.
@@ -51,7 +51,6 @@ from app.config import config
 from app.core.explainer import ExplainerError, explain_query_result
 from app.core.query_planner import QueryPlanner, QueryPlannerError
 from app.core.sql_executor import (
-    DEFAULT_TABLE_NAME,
     QueryExecutionError,
     QueryTimeoutError,
     SQLExecutor,
@@ -405,29 +404,7 @@ class DataAnalystAgent:
             max_result_rows=self._max_result_rows,
         ) as executor:
 
-            # SQLExecutor owns the canonical table name.
-            #
-            # In production, this is a real string such as "dataset".
-            #
-            # In tests, SQLExecutor is replaced with a MagicMock. An
-            # unconfigured MagicMock.table_name is itself a MagicMock,
-            # which is not a valid SQL table identifier.
-            #
-            # Therefore:
-            #   real executor -> use its actual table_name
-            #   mock executor -> fall back to DEFAULT_TABLE_NAME
-            #
-            # DEFAULT_TABLE_NAME is imported from sql_executor.py rather
-            # than duplicated here, keeping the table-name contract
-            # centralized.
-            table_name = getattr(
-                executor,
-                "table_name",
-                DEFAULT_TABLE_NAME,
-            )
-
-            if not isinstance(table_name, str) or not table_name.strip():
-                table_name = DEFAULT_TABLE_NAME
+            table_name = executor.table_name
 
             validation_started_at = perf_counter()
 

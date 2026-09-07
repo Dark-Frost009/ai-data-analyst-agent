@@ -53,7 +53,7 @@ set `has_other: True` and `other_count: <n>` so the UI can say so.
 
 Design goals:
     - Never mutate the input DataFrame.
-    - Never make network or AWS calls.
+    - Never make network or external provider calls.
     - Never execute SQL.
     - Keep chart-selection deterministic and testable.
     - Return JSON-safe chart specifications.

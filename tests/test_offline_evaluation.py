@@ -2,7 +2,7 @@
 
 Each case supplies a fixed SQL response from a mocked planner, then runs the
 same validation and DuckDB execution path used by the Streamlit application.
-This provides a fast, repeatable regression suite without a live Bedrock
+This provides a fast, repeatable regression suite without a live LLM
 dependency.
 """
 
@@ -138,3 +138,29 @@ def test_unknown_column_becomes_a_safe_execution_error(
             generate_explanation=False,
             generate_chart_spec=False,
         )
+
+# Handwritten response fixtures exercise the real planner and SQL pipeline.
+# They are provider-independent semantic oracles, not measured LLM accuracy.
+import json
+from pathlib import Path
+from app.core.query_planner import QueryPlanner
+
+_FIXTURES = Path(__file__).parent / 'fixtures'
+_CASES = json.loads((_FIXTURES / 'analysis_cases.json').read_text())
+
+
+@pytest.mark.parametrize('case', _CASES, ids=lambda case:case['name'])
+def test_semantic_response_fixtures_through_real_planner(case):
+    from app.core.data_loader import load_csv
+    with (_FIXTURES / 'analysis.csv').open('rb') as source:
+        dataframe = load_csv(source)
+    model = MagicMock()
+    model.generate_text.return_value = case['response']
+    agent = DataAnalystAgent(dataframe=dataframe,
+        dataset_profile=profile_dataframe(dataframe),
+        query_planner=QueryPlanner(llm_client=model))
+    result = agent.run(case['question'],generate_explanation=False,generate_chart_spec=False)
+    assert result.query_result.dataframe.to_dict('records') == case['expected']
+    prompt = model.generate_text.call_args.kwargs['prompt']
+    assert case['question'] in prompt
+    assert 'Artist' in prompt

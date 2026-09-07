@@ -205,6 +205,9 @@ def validate_sql(
             detail=f"Statement type: {type(ast).__name__}",
         )
 
+    if ast.find(exp.SetOperation):
+        return _rejected("UNSUPPORTED_SET_OPERATION", "UNION, INTERSECT and EXCEPT are unsupported.")
+
     # -----------------------------------------------------------------------
     # Table allowlist
     # -----------------------------------------------------------------------
@@ -261,30 +264,6 @@ def validate_sql(
 # CTE handling
 # ---------------------------------------------------------------------------
 
-def _collect_cte_names(
-    ast: exp.Expression,
-) -> Set[str]:
-    """
-    Collect aliases of every CTE defined inside the query.
-    """
-
-    names: Set[str] = set()
-
-    for cte in ast.find_all(exp.CTE):
-        alias = getattr(
-            cte,
-            "alias_or_name",
-            None,
-        )
-
-        if alias:
-            names.add(
-                alias.lower()
-            )
-
-    return names
-
-
 # ---------------------------------------------------------------------------
 # Table allowlist
 # ---------------------------------------------------------------------------
@@ -297,7 +276,15 @@ def _check_table_allowlist(
     Reject any external table reference that is not explicitly allowed.
     """
 
-    cte_names = _collect_cte_names(ast)
+    from sqlglot.optimizer.scope import Scope, traverse_scope
+
+    # Resolve each table in its own lexical scope. A nested CTE must not
+    # authorize an identically named outer physical table.
+    cte_references = set()
+    for scope in traverse_scope(ast):
+        for table in scope.tables:
+            if isinstance(scope.sources.get(table.alias_or_name), Scope):
+                cte_references.add(id(table))
 
     for table in ast.find_all(exp.Table):
 
@@ -327,7 +314,7 @@ def _check_table_allowlist(
             continue
 
         # Local CTE references are allowed.
-        if table_name in cte_names:
+        if id(table) in cte_references:
             continue
 
         if table_name not in allowed_tables_lower:
@@ -374,6 +361,10 @@ def _check_function_allowlist(
     """
 
     for func in ast.find_all(exp.Func):
+        # SQLGlot also models boolean connectors as Func. They combine
+        # predicates; all child function/table nodes are still checked.
+        if isinstance(func, (exp.And, exp.Or)):
+            continue
 
         # ---------------------------------------------------------------
         # SQL CASE handling
@@ -455,35 +446,6 @@ def _check_function_allowlist(
                     f"{sorted(_ALLOWED_FUNCTIONS)}"
                 ),
             )
-
-    # -----------------------------------------------------------------------
-    # Explicitly inspect CAST / TRY_CAST expressions.
-    #
-    # Depending on the sqlglot version, these may not appear in
-    # ast.find_all(exp.Func), so inspect the complete expression tree too.
-    # -----------------------------------------------------------------------
-
-    for expression in ast.walk():
-
-        type_name = type(expression).__name__.upper()
-
-        if type_name in {
-            "CAST",
-            "TRYCAST",
-        }:
-            continue
-
-        try:
-            sql_name = expression.sql_name().upper()
-        except Exception:
-            sql_name = ""
-
-        # If it is a dedicated conversion expression, allow it.
-        if sql_name in {
-            "CAST",
-            "TRY_CAST",
-        }:
-            continue
 
     return None
 

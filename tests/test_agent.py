@@ -285,6 +285,7 @@ def test_agent_calls_query_planner(
     # SQLExecutor is tested independently. Here we replace it so this
     # test focuses on orchestration.
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -315,6 +316,7 @@ def test_agent_forwards_conversation_context_to_planner(
     """Follow-up context is passed to planning, not directly to execution."""
 
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
     )
@@ -446,6 +448,7 @@ def test_agent_executes_only_validated_sql(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -496,6 +499,7 @@ def test_agent_wraps_query_execution_error(
     monkeypatch,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.side_effect = (
         QueryExecutionError("DuckDB failed")
@@ -529,6 +533,7 @@ def test_agent_generates_explanation(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -579,6 +584,7 @@ def test_agent_can_skip_explanation(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -625,6 +631,7 @@ def test_agent_wraps_explanation_error(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -639,7 +646,7 @@ def test_agent_wraps_explanation_error(
         "app.core.agent.explain_query_result",
         MagicMock(
             side_effect=ExplainerLLMError(
-                "Bedrock failed"
+                "LLM failed"
             )
         ),
     )
@@ -675,6 +682,7 @@ def test_agent_generates_chart(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -730,6 +738,7 @@ def test_agent_can_skip_chart(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -776,6 +785,7 @@ def test_agent_wraps_chart_error(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -826,6 +836,7 @@ def test_agent_result_contains_all_pipeline_outputs(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result
@@ -884,6 +895,7 @@ def test_run_analysis_wrapper(
     mock_query_result,
 ):
     mock_executor = MagicMock()
+    mock_executor.__enter__.return_value.table_name = "dataset"
 
     mock_executor.__enter__.return_value.execute.return_value = (
         mock_query_result

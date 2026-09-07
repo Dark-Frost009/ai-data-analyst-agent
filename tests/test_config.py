@@ -6,8 +6,8 @@ from app.config import AppConfig
 @pytest.mark.parametrize(
     "setting",
     [
-        "bedrock_connect_timeout_seconds",
-        "bedrock_read_timeout_seconds",
+        "llm_connect_timeout_seconds",
+        "llm_read_timeout_seconds",
         "max_upload_size_mb",
         "max_query_result_rows",
         "query_timeout_seconds",
@@ -29,8 +29,8 @@ def test_config_rejects_non_positive_operational_limits(
     [
         "app_name",
         "app_env",
-        "aws_region",
-        "bedrock_model_id",
+        "llm_provider",
+        "llm_model_id",
         "duckdb_memory_limit",
     ],
 )
@@ -47,5 +47,5 @@ def test_config_accepts_defaults():
     config = AppConfig()
 
     assert config.max_concurrent_analyses == 1
-    assert config.bedrock_connect_timeout_seconds == 5
-    assert config.bedrock_read_timeout_seconds == 45
+    assert config.llm_connect_timeout_seconds == 5
+    assert config.llm_read_timeout_seconds == 45

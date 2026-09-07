@@ -5,7 +5,7 @@ Exercises the full path — register a DataFrame, validate SQL via
 app.utils.security.validate_sql(), execute the validated result —
 since that's how this module is actually meant to be used.
 
-No Streamlit, Bedrock, or network involved; pure DuckDB + pandas.
+No Streamlit, LLM, or network involved; pure DuckDB + pandas.
 """
 
 import threading

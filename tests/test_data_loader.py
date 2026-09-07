@@ -1,3 +1,4 @@
+import pandas as pd
 """
 Tests for app.core.data_loader.load_csv.
 
@@ -129,3 +130,9 @@ def test_load_csv_rejects_oversized_file_without_declared_size():
     content = b"a,b\n" + b"1,2\n" * 300
     with pytest.raises(FileTooLargeError):
         load_csv(io.BytesIO(content), max_size_mb=0.001)
+
+@pytest.mark.parametrize('headers', [('Artist ', 'Artist'), ('Artist', 'artist'), ('A\u00a0B', 'A B')])
+def test_normalized_duplicate_headers_are_rejected(headers):
+    from app.core.data_loader import _normalize_column_names, CSVParsingError
+    with pytest.raises(CSVParsingError, match='unique'):
+        _normalize_column_names(pd.DataFrame([[1,2]], columns=headers))

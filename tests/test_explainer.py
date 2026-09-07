@@ -1,8 +1,8 @@
 """
 Tests for app.core.explainer.
 
-All tests use a mocked BedrockClient, so they do not require AWS credentials,
-network access, or a live Bedrock endpoint.
+All tests use a mocked LLMClient, so they do not require external provider credentials,
+network access, or a live LLM endpoint.
 """
 
 from unittest.mock import MagicMock
@@ -18,7 +18,7 @@ from app.core.explainer import (
     _build_system_prompt,
     explain_query_result,
 )
-from app.core.llm_client import BedrockAPIError
+from app.core.llm_client import LLMAPIError
 from app.models.schemas import QueryResult
 
 
@@ -62,7 +62,7 @@ def test_explain_query_result_success():
     explanation = explain_query_result(
         sql="SELECT product, sales FROM sales ORDER BY sales DESC",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
     )
 
     assert explanation == "Product B generated the highest sales at 250."
@@ -83,7 +83,7 @@ def test_explain_query_result_strips_response_whitespace():
     explanation = explain_query_result(
         sql="   SELECT * FROM sales   ",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
     )
 
     assert explanation == "The result is positive."
@@ -106,7 +106,7 @@ def test_explain_query_result_passes_system_prompt():
     explain_query_result(
         sql="SELECT * FROM sales",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
     )
 
     called_kwargs = client.generate_text.call_args.kwargs
@@ -129,7 +129,7 @@ def test_explain_query_result_passes_generation_parameters():
     explain_query_result(
         sql="SELECT * FROM sales",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
         max_tokens=300,
         temperature=0.2,
     )
@@ -153,7 +153,7 @@ def test_explain_query_result_rejects_empty_sql():
         explain_query_result(
             sql="   ",
             query_result=result,
-            bedrock_client=client,
+            llm_client=client,
         )
 
     client.generate_text.assert_not_called()
@@ -167,7 +167,7 @@ def test_explain_query_result_rejects_non_string_sql():
         explain_query_result(
             sql=None,
             query_result=result,
-            bedrock_client=client,
+            llm_client=client,
         )
 
     client.generate_text.assert_not_called()
@@ -185,7 +185,7 @@ def test_explain_query_result_rejects_invalid_query_result():
         explain_query_result(
             sql="SELECT 1",
             query_result=None,
-            bedrock_client=client,
+            llm_client=client,
         )
 
     client.generate_text.assert_not_called()
@@ -209,7 +209,7 @@ def test_explain_empty_query_result():
     explanation = explain_query_result(
         sql="SELECT product, sales FROM sales WHERE sales > 1000000",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
     )
 
     assert explanation == "The query returned no matching rows."
@@ -239,7 +239,7 @@ def test_explain_truncated_result_mentions_truncation():
     explain_query_result(
         sql="SELECT product, sales FROM sales",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
         max_result_rows=3,
     )
 
@@ -274,7 +274,7 @@ def test_explain_result_rows_are_bounded():
     explain_query_result(
         sql="SELECT id, value FROM data",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
         max_result_rows=3,
     )
 
@@ -306,15 +306,14 @@ def test_build_result_summary_zero_rows_limit():
 
 
 # --------------------------------------------------------------------------
-# 11. Bedrock errors are wrapped
+# 11. LLM errors are wrapped
 # --------------------------------------------------------------------------
 
 
-def test_explain_query_result_wraps_bedrock_error():
+def test_explain_query_result_wraps_llm_error():
     client = MagicMock()
-    client.generate_text.side_effect = BedrockAPIError(
-        "Bedrock failed",
-        error_code="ValidationException",
+    client.generate_text.side_effect = LLMAPIError(
+        "LLM failed",
     )
 
     result = _query_result()
@@ -323,11 +322,11 @@ def test_explain_query_result_wraps_bedrock_error():
         explain_query_result(
             sql="SELECT * FROM sales",
             query_result=result,
-            bedrock_client=client,
+            llm_client=client,
         )
 
     assert "Could not generate explanation" in str(excinfo.value)
-    assert "Bedrock failed" in str(excinfo.value)
+    assert "LLM failed" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------
@@ -345,7 +344,7 @@ def test_explain_query_result_rejects_empty_llm_response():
         explain_query_result(
             sql="SELECT * FROM sales",
             query_result=result,
-            bedrock_client=client,
+            llm_client=client,
         )
 
 
@@ -364,7 +363,7 @@ def test_explain_query_result_rejects_none_llm_response():
         explain_query_result(
             sql="SELECT * FROM sales",
             query_result=result,
-            bedrock_client=client,
+            llm_client=client,
         )
 
 
@@ -390,7 +389,7 @@ def test_explain_query_result_rejects_invalid_parameters(kwargs):
         explain_query_result(
             sql="SELECT * FROM sales",
             query_result=result,
-            bedrock_client=client,
+            llm_client=client,
             **kwargs,
         )
 
@@ -416,7 +415,7 @@ def test_explain_prompt_contains_result_values():
     explain_query_result(
         sql="SELECT product, sales FROM sales",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
     )
 
     prompt = client.generate_text.call_args.kwargs["prompt"]
@@ -491,7 +490,7 @@ def test_explain_result_handles_missing_values():
     explain_query_result(
         sql="SELECT name, score FROM results",
         query_result=result,
-        bedrock_client=client,
+        llm_client=client,
     )
 
     prompt = client.generate_text.call_args.kwargs["prompt"]

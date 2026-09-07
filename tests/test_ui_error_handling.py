@@ -9,7 +9,7 @@ MAIN_MODULE = PROJECT_ROOT / "app" / "main.py"
 
 
 def _main_source() -> str:
-    return MAIN_MODULE.read_text(encoding="utf-8")
+    return MAIN_MODULE.read_text(encoding="utf-8") + "\n" + (PROJECT_ROOT / "app/ui/analysis.py").read_text(encoding="utf-8")
 
 
 def test_streamlit_ui_does_not_render_raw_exceptions():

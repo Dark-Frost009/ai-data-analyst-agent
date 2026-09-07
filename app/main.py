@@ -60,6 +60,7 @@ import streamlit as st
 # Application imports
 # --------------------------------------------------------------------------
 
+from app.ui.analysis import _run_analysis
 from app.config import config
 from app.core.agent import (
     AgentCapacityError,
@@ -104,627 +105,7 @@ st.set_page_config(
 # Global CSS
 # --------------------------------------------------------------------------
 
-st.html(
-    """
-    <style>
-
-        /* ================================================================
-           GLOBAL APPLICATION
-           ================================================================ */
-
-        .stApp {
-            background:
-                radial-gradient(
-                    circle at 82% 5%,
-                    rgba(219, 234, 254, 0.55),
-                    transparent 28%
-                ),
-                radial-gradient(
-                    circle at 8% 38%,
-                    rgba(239, 246, 255, 0.72),
-                    transparent 30%
-                ),
-                #f8fafc;
-        }
-
-        .block-container {
-            max-width: 1400px;
-            padding-top: 1.8rem;
-            padding-bottom: 4rem;
-            padding-left: 3rem;
-            padding-right: 3rem;
-        }
-
-
-        /* ================================================================
-           TYPOGRAPHY
-           ================================================================ */
-
-        h1 {
-            font-size: 2.65rem !important;
-            font-weight: 800 !important;
-            letter-spacing: -0.045em !important;
-            color: #0f172a !important;
-            margin-bottom: 0.4rem !important;
-        }
-
-        h2 {
-            font-size: 1.55rem !important;
-            font-weight: 750 !important;
-            letter-spacing: -0.025em !important;
-            color: #0f172a !important;
-        }
-
-        h3 {
-            font-weight: 700 !important;
-            color: #0f172a !important;
-        }
-
-        p {
-            color: #64748b;
-        }
-
-        /* Streamlit Markdown inherits the active theme's text color.
-           The app surface is intentionally light, so explicitly set
-           readable body and list colors for AI-generated explanations. */
-        div[data-testid="stMarkdownContainer"] p,
-        div[data-testid="stMarkdownContainer"] li {
-            color: #475569 !important;
-        }
-
-        div[data-testid="stMarkdownContainer"] li::marker {
-            color: #64748b;
-        }
-
-
-        /* ================================================================
-           SIDEBAR
-           ================================================================ */
-
-        section[data-testid="stSidebar"] {
-            background:
-                linear-gradient(
-                    180deg,
-                    rgba(255, 255, 255, 0.98),
-                    rgba(248, 250, 252, 0.98)
-                );
-
-            border-right: 1px solid #e2e8f0;
-        }
-
-        section[data-testid="stSidebar"] > div {
-            padding-top: 1.8rem;
-            padding-bottom: 2rem;
-        }
-
-        section[data-testid="stSidebar"] h2,
-        section[data-testid="stSidebar"] h3 {
-            color: #0f172a !important;
-        }
-
-        section[data-testid="stSidebar"] hr {
-            margin: 1.25rem 0;
-        }
-
-
-        /* ================================================================
-           APP EYEBROW
-           ================================================================ */
-
-        .app-eyebrow {
-            display: block;
-            width: 100%;
-
-            margin: 0 0 0.65rem 0;
-            padding: 0;
-
-            font-size: 0.74rem;
-            line-height: 1.2;
-
-            font-weight: 800;
-
-            letter-spacing: 0.20em;
-
-            color: #64748b;
-
-            text-align: left;
-        }
-
-
-        /* ================================================================
-           HERO
-           ================================================================ */
-
-        .hero-card {
-            width: 100%;
-            box-sizing: border-box;
-
-            margin-top: 2rem;
-            margin-bottom: 2.25rem;
-
-            padding: 3.6rem 3rem;
-
-            border: 1px solid #dbe4ee;
-            border-radius: 26px;
-
-            background:
-                radial-gradient(
-                    circle at 50% 0%,
-                    rgba(219, 234, 254, 0.78),
-                    transparent 45%
-                ),
-                radial-gradient(
-                    circle at 90% 30%,
-                    rgba(239, 246, 255, 0.78),
-                    transparent 32%
-                ),
-                rgba(255, 255, 255, 0.94);
-
-            box-shadow:
-                0 25px 65px rgba(15, 23, 42, 0.065),
-                0 5px 18px rgba(15, 23, 42, 0.025),
-                inset 0 1px 0 rgba(255, 255, 255, 0.95);
-
-            text-align: center;
-        }
-
-        .hero-icon {
-            width: 82px;
-            height: 82px;
-
-            margin: 0 auto 1.35rem auto;
-
-            display: flex;
-            align-items: center;
-            justify-content: center;
-
-            border-radius: 22px;
-
-            background:
-                linear-gradient(
-                    145deg,
-                    #eff6ff,
-                    #dbeafe
-                );
-
-            border: 1px solid #bfdbfe;
-
-            font-size: 2.8rem;
-            line-height: 1;
-
-            box-shadow:
-                0 12px 30px rgba(37, 99, 235, 0.12);
-        }
-
-        .hero-eyebrow {
-            margin-bottom: 0.65rem;
-
-            font-size: 0.75rem;
-            line-height: 1.2;
-
-            font-weight: 800;
-
-            letter-spacing: 0.20em;
-
-            color: #64748b;
-        }
-
-        .hero-title {
-            margin-bottom: 1rem;
-
-            font-size: 2.35rem;
-            line-height: 1.12;
-
-            font-weight: 800;
-
-            letter-spacing: -0.045em;
-
-            color: #0f172a !important;
-            -webkit-text-fill-color: #0f172a;
-            caret-color: #0f172a !important;
-        }
-
-        .hero-description {
-            max-width: 760px;
-
-            margin: 0 auto;
-
-            font-size: 1rem;
-            line-height: 1.75;
-
-            color: #64748b;
-        }
-
-
-        /* ================================================================
-           SECTION LABEL
-           ================================================================ */
-
-        .section-label {
-            margin-bottom: 1rem;
-
-            font-size: 0.76rem;
-            font-weight: 800;
-
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
-
-            color: #64748b;
-        }
-
-
-        /* ================================================================
-           FEATURE CARDS
-           ================================================================ */
-
-        .feature-card {
-            height: 100%;
-            min-height: 185px;
-
-            box-sizing: border-box;
-
-            padding: 1.45rem;
-
-            border: 1px solid #e2e8f0;
-            border-radius: 18px;
-
-            background:
-                linear-gradient(
-                    180deg,
-                    rgba(255, 255, 255, 0.96),
-                    rgba(248, 250, 252, 0.90)
-                );
-
-            box-shadow:
-                0 8px 24px rgba(15, 23, 42, 0.035);
-
-            transition:
-                transform 0.18s ease,
-                box-shadow 0.18s ease,
-                border-color 0.18s ease;
-        }
-
-        .feature-card:hover {
-            transform: translateY(-2px);
-
-            border-color: #cbd5e1;
-
-            box-shadow:
-                0 14px 30px rgba(15, 23, 42, 0.065);
-        }
-
-        .feature-icon {
-            width: 44px;
-            height: 44px;
-
-            margin-bottom: 1rem;
-
-            display: flex;
-            align-items: center;
-            justify-content: center;
-
-            border-radius: 12px;
-
-            background: #eff6ff;
-            border: 1px solid #dbeafe;
-
-            font-size: 1.25rem;
-        }
-
-        .feature-title {
-            margin-bottom: 0.45rem;
-
-            font-size: 1rem;
-            font-weight: 750;
-
-            color: #0f172a;
-        }
-
-        .feature-text {
-            font-size: 0.89rem;
-            line-height: 1.6;
-
-            color: #64748b;
-        }
-
-
-        /* ================================================================
-           METRIC CARDS
-           ================================================================ */
-
-        div[data-testid="stMetric"] {
-            min-height: 115px;
-
-            background:
-                linear-gradient(
-                    145deg,
-                    rgba(255, 255, 255, 0.97),
-                    rgba(248, 250, 252, 0.91)
-                );
-
-            border: 1px solid #e2e8f0;
-
-            border-radius: 17px;
-
-            padding: 1.05rem 1.2rem;
-
-            box-shadow:
-                0 7px 22px rgba(15, 23, 42, 0.04);
-        }
-
-        div[data-testid="stMetricLabel"] {
-            font-weight: 650;
-            color: #64748b;
-        }
-
-        div[data-testid="stMetricValue"] {
-            color: #0f172a;
-            font-weight: 800;
-        }
-
-
-        /* ================================================================
-           FILE UPLOADER
-           ================================================================ */
-
-        [data-testid="stFileUploader"] {
-            background: transparent;
-        }
-
-        [data-testid="stFileUploaderDropzone"] {
-            border: 1px dashed #cbd5e1;
-            border-radius: 14px;
-
-            background:
-                linear-gradient(
-                    180deg,
-                    #f8fafc,
-                    #ffffff
-                );
-
-            transition:
-                border-color 0.18s ease,
-                background 0.18s ease;
-        }
-
-        [data-testid="stFileUploaderDropzone"]:hover {
-            border-color: #93c5fd;
-            background: #f8fbff;
-        }
-
-
-        /* ================================================================
-           TEXT AREA
-           ================================================================ */
-
-        div[data-testid="stTextArea"] textarea {
-            min-height: 110px;
-
-            border-radius: 15px;
-
-            border: 1px solid #cbd5e1;
-
-            padding: 1rem 1.05rem;
-
-            background: #ffffff;
-
-            font-size: 1rem;
-
-            color: #0f172a;
-
-            box-shadow:
-                0 3px 12px rgba(15, 23, 42, 0.025);
-        }
-
-        div[data-testid="stTextArea"] textarea:focus {
-            border-color: #93c5fd;
-            caret-color: #2563eb !important;
-
-            box-shadow:
-                0 0 0 3px rgba(59, 130, 246, 0.10),
-                0 5px 16px rgba(15, 23, 42, 0.035);
-        }
-
-        div[data-testid="stTextArea"] textarea::placeholder {
-            color: #94a3b8 !important;
-            -webkit-text-fill-color: #94a3b8;
-            opacity: 1;
-        }
-
-
-        /* ================================================================
-           SELECT BOX
-           ================================================================ */
-
-        div[data-testid="stSelectbox"] > div > div {
-            border-radius: 12px;
-            border-color: #cbd5e1;
-        }
-
-
-        /* ================================================================
-           PRIMARY BUTTON
-           ================================================================ */
-
-        div.stButton > button[kind="primary"] {
-            width: 100%;
-
-            min-height: 3.15rem;
-
-            border-radius: 13px;
-
-            font-weight: 750;
-
-            letter-spacing: 0.01em;
-
-            border: none;
-
-            box-shadow:
-                0 8px 20px rgba(37, 99, 235, 0.18);
-
-            transition:
-                transform 0.15s ease,
-                box-shadow 0.15s ease;
-        }
-
-        div.stButton > button[kind="primary"]:hover {
-            transform: translateY(-1px);
-
-            box-shadow:
-                0 11px 26px rgba(37, 99, 235, 0.25);
-        }
-
-
-        /* ================================================================
-           DATAFRAMES
-           ================================================================ */
-
-        div[data-testid="stDataFrame"] {
-            border-radius: 15px;
-            overflow: hidden;
-
-            border: 1px solid #e2e8f0;
-
-            box-shadow:
-                0 5px 18px rgba(15, 23, 42, 0.025);
-        }
-
-
-        /* ================================================================
-           CODE BLOCK
-           ================================================================ */
-
-        div[data-testid="stCode"] {
-            border-radius: 15px;
-            overflow: hidden;
-
-            border: 1px solid #e2e8f0;
-
-            box-shadow:
-                0 5px 18px rgba(15, 23, 42, 0.025);
-        }
-
-
-        /* ================================================================
-           EXPANDERS
-           ================================================================ */
-
-        div[data-testid="stExpander"] {
-            border: 1px solid #e2e8f0;
-            border-radius: 15px;
-
-            background:
-                rgba(255, 255, 255, 0.78);
-
-            overflow: hidden;
-        }
-
-
-        /* ================================================================
-           ALERTS
-           ================================================================ */
-
-        div[data-testid="stAlert"] {
-            border-radius: 14px;
-        }
-
-
-        /* ================================================================
-           RESULT HEADER
-           ================================================================ */
-
-        .result-header {
-            margin-bottom: 0.65rem;
-
-            font-size: 0.76rem;
-            font-weight: 800;
-
-            letter-spacing: 0.13em;
-            text-transform: uppercase;
-
-            color: #64748b;
-        }
-
-
-        /* ================================================================
-           INFO STRIP
-           ================================================================ */
-
-        .info-strip {
-            display: flex;
-            align-items: center;
-            gap: 0.65rem;
-
-            margin-top: 1rem;
-
-            padding: 0.95rem 1.1rem;
-
-            border: 1px solid #dbeafe;
-            border-radius: 13px;
-
-            background:
-                linear-gradient(
-                    90deg,
-                    rgba(239, 246, 255, 0.95),
-                    rgba(248, 250, 252, 0.85)
-                );
-
-            color: #475569;
-
-            font-size: 0.88rem;
-        }
-
-
-        /* ================================================================
-           FOOTER
-           ================================================================ */
-
-        .app-footer {
-            margin-top: 3rem;
-            padding-top: 1.5rem;
-
-            border-top: 1px solid #e2e8f0;
-
-            text-align: center;
-
-            font-size: 0.78rem;
-
-            color: #94a3b8;
-        }
-
-
-        /* ================================================================
-           RESPONSIVE
-           ================================================================ */
-
-        @media (max-width: 900px) {
-
-            .block-container {
-                padding-left: 1.2rem;
-                padding-right: 1.2rem;
-            }
-
-            .hero-card {
-                margin-top: 1.5rem;
-                padding: 2.5rem 1.4rem;
-            }
-
-            .hero-title {
-                font-size: 1.85rem;
-            }
-
-            .hero-description {
-                font-size: 0.94rem;
-            }
-
-            h1 {
-                font-size: 2.15rem !important;
-            }
-        }
-
-    </style>
-    """
-)
+st.html("<style>" + (PROJECT_ROOT / "app/ui/styles.css").read_text(encoding="utf-8") + "</style>")
 
 
 # --------------------------------------------------------------------------
@@ -770,6 +151,9 @@ def _render_public_demo_access_gate() -> bool:
     # Local development remains frictionless until a deployment explicitly
     # supplies a non-empty secret through its environment or secret manager.
     if not expected_password.strip():
+        if config.is_production:
+            st.error("The demo is locked until APP_ACCESS_PASSWORD is configured.")
+            return False
         return True
 
     if st.session_state.demo_access_granted:
@@ -777,7 +161,7 @@ def _render_public_demo_access_gate() -> bool:
 
     st.title("🔒 Private Portfolio Demo")
     st.caption(
-        "This demo is access-controlled to protect the paid AI service "
+        "This demo is access-controlled to protect the AI service quota "
         "used for analysis."
     )
 
@@ -1242,124 +626,6 @@ def _display_pie_chart(data: list) -> None:
     )
 
 
-def _run_analysis(
-    question: str,
-    chart_type: str | None,
-) -> None:
-    """Run the complete DataAnalystAgent pipeline."""
-
-    agent = st.session_state.agent
-
-    if agent is None:
-        st.error(
-            "Please upload a CSV file before asking a question."
-        )
-        return
-
-    with st.spinner("🤖 Analyzing your question..."):
-
-        try:
-
-            result = agent.run(
-                question=question,
-                generate_explanation=True,
-                generate_chart_spec=True,
-                chart_type=chart_type,
-                conversation_context=(
-                    st.session_state.conversation_history
-                ),
-            )
-
-        except AgentCapacityError:
-
-            logger.warning("Analysis request rejected because capacity is full")
-
-            st.warning(
-                "⏳ The app is busy processing another analysis. "
-                "Please try again in a moment."
-            )
-            return
-
-        except AgentPlanningError as exc:
-
-            logger.exception("Agent planning failed")
-
-            st.error(
-                "❌ The AI model could not generate a valid analysis plan."
-            )
-            return
-
-        except AgentExplanationError as exc:
-
-            logger.exception("Explanation generation failed")
-
-            st.error(
-                "⚠️ The SQL analysis completed, but generating "
-                "the explanation failed."
-            )
-            return
-
-        except AgentValidationError as exc:
-
-            logger.exception("SQL validation failed")
-
-            st.error(
-                "🛡️ The generated SQL did not pass the security checks."
-            )
-            return
-
-        except AgentExecutionError as exc:
-
-            logger.exception("SQL execution failed")
-
-            st.error(
-                "❌ The validated SQL could not be executed."
-            )
-            return
-
-        except AgentChartError as exc:
-
-            logger.exception("Chart generation failed")
-
-            st.error(
-                "⚠️ The analysis completed, but the visualization "
-                "could not be generated."
-            )
-            return
-
-        except Exception as exc:
-
-            logger.exception(
-                "Unexpected agent execution error"
-            )
-
-            st.error(
-                "❌ The analysis could not be completed."
-            )
-            return
-
-    st.session_state.last_result = result
-
-    # Only completed, validated work becomes context for a later follow-up.
-    # The planner itself applies the same bound again as a defense in depth.
-    if result.validation.is_valid and result.validation.cleaned_sql:
-        history = list(st.session_state.conversation_history)
-        history.append(
-            {
-                "question": result.question,
-                "sql": result.validation.cleaned_sql,
-            }
-        )
-        st.session_state.conversation_history = history[
-            -MAX_CONVERSATION_TURNS:
-        ]
-
-        logger.info(
-            "Conversation context updated | retained_turns=%d",
-            len(st.session_state.conversation_history),
-        )
-
-
 def _display_analysis_result() -> None:
     """Display the latest analysis result."""
 
@@ -1454,9 +720,9 @@ def main() -> None:
         return
 
     logger.info(
-        "AI Data Analyst Agent started | env=%s | region=%s",
+        "AI Data Analyst Agent started | env=%s | provider=%s",
         config.app_env,
-        config.aws_region,
+        config.llm_provider,
     )
 
     # ----------------------------------------------------------------------
@@ -1572,7 +838,7 @@ def main() -> None:
         )
 
         st.caption(
-            f"Region: `{config.aws_region}`"
+            f"AI provider: `{config.llm_provider}`"
         )
 
     # ----------------------------------------------------------------------
@@ -1670,7 +936,7 @@ def main() -> None:
 
                     <div class="feature-text">
                         Ask questions in plain English and let
-                        Amazon Bedrock translate them into SQL.
+                        Groq translate them into SQL.
                     </div>
 
                 </div>
@@ -1710,7 +976,7 @@ def main() -> None:
                 <span>✨</span>
                 <span>
                     Powered by secure SQL validation, DuckDB,
-                    and Amazon Bedrock.
+                    and Groq.
                 </span>
             </div>
             """
@@ -1806,7 +1072,7 @@ def main() -> None:
     st.html(
         """
         <div class="app-footer">
-            AI Data Analyst Agent · Secure SQL · DuckDB · Amazon Bedrock
+            AI Data Analyst Agent · Secure SQL · DuckDB · Groq
         </div>
         """
     )

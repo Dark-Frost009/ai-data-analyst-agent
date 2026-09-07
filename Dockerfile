@@ -13,8 +13,8 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# The application reads credentials from the standard AWS provider chain at
-# runtime. Do not copy a local .env file or AWS credential files into image.
+# Supply GROQ_API_KEY and APP_ACCESS_PASSWORD privately at runtime.
+# Never copy a local .env or secrets file into the image.
 COPY app ./app
 
 # Include the non-secret Streamlit theme and server configuration.

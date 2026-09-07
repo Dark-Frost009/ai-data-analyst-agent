@@ -1,487 +1,113 @@
-"""
-Tests for app.core.llm_client.BedrockClient.
+"""Adapter contract tests use the real SDK with an offline HTTP transport."""
+import json
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-Two kinds of tests live here on purpose:
-
-1. Mocked unit tests (run by default, no network/AWS credentials needed).
-   These verify request building, response parsing, error mapping, and
-   retry behavior in isolation.
-
-2. ONE live integration smoke test, skipped by default, that makes a real
-   call to Bedrock. This is what actually proves your AWS setup
-   (credentials, region, and model access) works end-to-end.
-
-   Run it explicitly with:
-
-   RUN_LIVE_AWS_TESTS=1 pytest tests/test_llm_client.py -v -s
-"""
-
-import os
-from unittest.mock import MagicMock, patch
-
+import groq
+import httpx
 import pytest
-from botocore.exceptions import (
-    BotoCoreError,
-    ClientError,
-    EndpointConnectionError,
-    NoCredentialsError,
-    ParamValidationError,
-)
 
-from app.config import config
-from app.core.llm_client import (
-    BedrockAccessDeniedError,
-    BedrockAPIError,
-    BedrockClient,
-    BedrockCredentialsError,
-    BedrockResponseFormatError,
-    BedrockThrottlingError,
-)
+from app.core import llm_client as llm
 
 
-def _client_error(code: str, message: str = "error") -> ClientError:
-    """Build a fake botocore ClientError for unit tests."""
-    return ClientError(
-        error_response={
-            "Error": {
-                "Code": code,
-                "Message": message,
-            }
-        },
-        operation_name="Converse",
-    )
+@pytest.fixture
+def transport(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-only-not-a-real-key")
+    calls = []
+    responses = []
+    original = groq.Groq
+    def handler(request):
+        calls.append(request)
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+    def factory(**kwargs):
+        assert kwargs['max_retries'] == 0
+        assert kwargs['timeout'].connect == 5
+        return original(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(llm.groq, 'Groq', factory)
+    return calls, responses
 
 
-# --------------------------------------------------------------------------
-# Mocked unit tests — no network, no AWS credentials required
-# --------------------------------------------------------------------------
+def completion(content=" SELECT 1 ", reason="stop"):
+    return httpx.Response(200, json={"id":"offline", "object":"chat.completion",
+        "created":0, "model":"offline", "choices":[{"index":0,
+        "finish_reason":reason,"message":{"role":"assistant","content":content}}]})
 
 
-@patch("app.core.llm_client.boto3.client")
-def test_client_uses_config_defaults_for_region_and_model(mock_boto_client):
-    """
-    BedrockClient(), called with no explicit args, must build its boto3
-    client from app.config.config rather than using hardcoded values.
-    """
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.return_value = {
-        "output": {
-            "message": {
-                "content": [
-                    {
-                        "text": "ok",
-                    }
-                ]
-            }
-        },
-        "stopReason": "end_turn",
-    }
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-    client.generate_text("Say hello")
-
-    mock_boto_client.assert_called_once()
-
-    client_kwargs = mock_boto_client.call_args.kwargs
-
-    assert mock_boto_client.call_args.args == ("bedrock-runtime",)
-    assert client_kwargs["region_name"] == config.aws_region
-
-    sdk_config = client_kwargs["config"]
-    assert sdk_config.connect_timeout == config.bedrock_connect_timeout_seconds
-    assert sdk_config.read_timeout == config.bedrock_read_timeout_seconds
-    assert sdk_config.retries["total_max_attempts"] == 1
-    assert sdk_config.retries["mode"] == "standard"
-
-    called_kwargs = mock_runtime.converse.call_args.kwargs
-
-    assert called_kwargs["modelId"] == config.bedrock_model_id
+def test_request_and_response_contract(transport):
+    calls, responses = transport
+    responses.append(completion())
+    assert llm.GroqClient(model_id="configured-model").generate_text("question", "rules", 128, 0) == "SELECT 1"
+    body = json.loads(calls[0].content)
+    assert body == {"model":"configured-model", "messages":[
+        {"role":"system","content":"rules"},{"role":"user","content":"question"}],
+        "max_completion_tokens":128,"temperature":0}
 
 
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_success(mock_boto_client):
-    """A valid Bedrock response should return the generated text."""
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.return_value = {
-        "output": {
-            "message": {
-                "content": [
-                    {
-                        "text": "Hello from Bedrock",
-                    }
-                ]
-            }
-        },
-        "stopReason": "end_turn",
-        "usage": {
-            "inputTokens": 5,
-            "outputTokens": 4,
-            "totalTokens": 9,
-        },
-    }
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient(
-        region_name="us-east-1",
-        model_id="fake-model-id",
-    )
-
-    result = client.generate_text("Say hello")
-
-    assert result == "Hello from Bedrock"
-
-    mock_runtime.converse.assert_called_once()
-
-    called_kwargs = mock_runtime.converse.call_args.kwargs
-
-    assert called_kwargs["modelId"] == "fake-model-id"
-    assert called_kwargs["messages"][0]["role"] == "user"
-    assert called_kwargs["messages"][0]["content"][0]["text"] == "Say hello"
+@pytest.mark.parametrize('status,expected', [(401,llm.LLMCredentialsError),
+    (403,llm.LLMAccessDeniedError),(429,llm.LLMThrottlingError),
+    (400,llm.LLMAPIError),(404,llm.LLMAPIError),(500,llm.LLMAPIError)])
+def test_safe_errors_without_retries(transport, status, expected):
+    calls, responses = transport
+    responses.append(httpx.Response(status,json={"error":{"message":"private data secret-value"}}))
+    with pytest.raises(expected) as error:
+        llm.GroqClient().generate_text("question")
+    assert 'secret-value' not in str(error.value)
+    assert len(calls) == 1
+    assert error.value.__suppress_context__
 
 
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_with_system_prompt(mock_boto_client):
-    """A system prompt should be included in the Converse request."""
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.return_value = {
-        "output": {
-            "message": {
-                "content": [
-                    {
-                        "text": "ok",
-                    }
-                ]
-            }
-        },
-        "stopReason": "end_turn",
-    }
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    client.generate_text(
-        "Hi",
-        system_prompt="You are terse.",
-    )
-
-    called_kwargs = mock_runtime.converse.call_args.kwargs
-
-    assert called_kwargs["system"] == [
-        {
-            "text": "You are terse.",
-        }
-    ]
+def test_timeout_without_retry(transport):
+    calls, responses = transport
+    responses.append(httpx.ReadTimeout("private details"))
+    with pytest.raises(llm.LLMAPIError, match="provider request failed"):
+        llm.GroqClient().generate_text("question")
+    assert len(calls) == 1
 
 
-def test_generate_text_rejects_empty_prompt():
-    """
-    An empty or whitespace-only prompt should be rejected before any
-    AWS client is needed.
-    """
-    client = BedrockClient.__new__(BedrockClient)
+@pytest.mark.parametrize('content,reason', [(None,'stop'),('','stop'),('partial','length'),('x','tool_calls')])
+def test_rejects_incomplete_responses(transport, content, reason):
+    transport[1].append(completion(content,reason))
+    with pytest.raises(llm.LLMResponseFormatError):
+        llm.GroqClient().generate_text("question")
 
+
+def test_missing_key_is_lazy_and_local(monkeypatch):
+    monkeypatch.delenv('GROQ_API_KEY',raising=False)
+    client = llm.GroqClient()
+    sdk = Mock()
+    monkeypatch.setattr(llm.groq,'Groq',sdk)
+    with pytest.raises(llm.LLMCredentialsError):
+        client.generate_text("question")
+    sdk.assert_not_called()
+
+
+@pytest.mark.parametrize('prompt',[None,'','   '])
+def test_empty_prompt_is_local(prompt):
     with pytest.raises(ValueError):
-        BedrockClient.generate_text(client, "   ")
+        llm.GroqClient().generate_text(prompt)
 
 
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_missing_credentials(mock_boto_client):
-    """Missing AWS credentials should map to BedrockCredentialsError."""
-    mock_runtime = MagicMock()
+def test_unknown_provider_never_falls_back(monkeypatch):
+    llm.get_llm_client.cache_clear()
+    monkeypatch.setattr(llm,'config',SimpleNamespace(llm_provider='unknown'))
+    with pytest.raises(llm.LLMAPIError):
+        llm.get_llm_client()
+    llm.get_llm_client.cache_clear()
 
-    mock_runtime.converse.side_effect = NoCredentialsError()
 
-    mock_boto_client.return_value = mock_runtime
+def test_default_model_reasoning_is_separate(transport):
+    calls, responses = transport
+    responses.append(completion())
+    llm.GroqClient().generate_text('question')
+    body = json.loads(calls[0].content)
+    assert body['include_reasoning'] is False
+    assert body['reasoning_effort'] == 'low'
 
-    client = BedrockClient()
 
-    with pytest.raises(BedrockCredentialsError):
-        client.generate_text("Say hello")
-
-    mock_runtime.converse.assert_called_once()
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_access_denied_does_not_retry(mock_boto_client):
-    """AccessDeniedException is permanent and must not be retried."""
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.side_effect = _client_error(
-        "AccessDeniedException"
-    )
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with pytest.raises(BedrockAccessDeniedError):
-        client.generate_text("Say hello")
-
-    mock_runtime.converse.assert_called_once()
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_throttling_retries_once_then_succeeds(
-    mock_boto_client,
-):
-    """
-    A throttling failure should trigger exactly one retry and then return
-    the successful response.
-    """
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.side_effect = [
-        _client_error("ThrottlingException"),
-        {
-            "output": {
-                "message": {
-                    "content": [
-                        {
-                            "text": "success after retry",
-                        }
-                    ]
-                }
-            },
-            "stopReason": "end_turn",
-        },
-    ]
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with patch("app.core.llm_client.time.sleep") as mock_sleep:
-        result = client.generate_text("Say hello")
-
-    assert result == "success after retry"
-    assert mock_runtime.converse.call_count == 2
-
-    mock_sleep.assert_called_once_with(0.5)
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_throttling_retries_once_then_raises(
-    mock_boto_client,
-):
-    """
-    If throttling persists after the single retry, the typed throttling
-    exception should be raised.
-    """
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.side_effect = [
-        _client_error("ThrottlingException"),
-        _client_error("ThrottlingException"),
-    ]
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with patch("app.core.llm_client.time.sleep") as mock_sleep:
-        with pytest.raises(BedrockThrottlingError):
-            client.generate_text("Say hello")
-
-    assert mock_runtime.converse.call_count == 2
-    mock_sleep.assert_called_once_with(0.5)
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_validation_error_does_not_retry(mock_boto_client):
-    """Permanent validation errors must fail immediately."""
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.side_effect = _client_error(
-        "ValidationException",
-        "bad model id",
-    )
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with pytest.raises(BedrockAPIError) as excinfo:
-        client.generate_text("Say hello")
-
-    assert excinfo.value.error_code == "ValidationException"
-    mock_runtime.converse.assert_called_once()
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_transient_sdk_error_retries_once_then_succeeds(
-    mock_boto_client,
-):
-    """A transient network SDK error should trigger one retry."""
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.side_effect = [
-        EndpointConnectionError(
-            endpoint_url="https://bedrock-runtime.example.com"
-        ),
-        {
-            "output": {
-                "message": {
-                    "content": [
-                        {
-                            "text": "success after SDK retry",
-                        }
-                    ]
-                }
-            },
-            "stopReason": "end_turn",
-        },
-    ]
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with patch("app.core.llm_client.time.sleep") as mock_sleep:
-        result = client.generate_text("Say hello")
-
-    assert result == "success after SDK retry"
-    assert mock_runtime.converse.call_count == 2
-    mock_sleep.assert_called_once_with(0.5)
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_transient_sdk_error_retries_once_then_raises(
-    mock_boto_client,
-):
-    """A persistent transient network error should fail after one retry."""
-    mock_runtime = MagicMock()
-
-    transient_error = EndpointConnectionError(
-        endpoint_url="https://bedrock-runtime.example.com"
-    )
-
-    mock_runtime.converse.side_effect = [
-        transient_error,
-        transient_error,
-    ]
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with patch("app.core.llm_client.time.sleep") as mock_sleep:
-        with pytest.raises(BedrockAPIError):
-            client.generate_text("Say hello")
-
-    assert mock_runtime.converse.call_count == 2
-    mock_sleep.assert_called_once_with(0.5)
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_non_retryable_sdk_error_does_not_retry(
-    mock_boto_client,
-):
-    """Permanent SDK errors must fail immediately without retrying."""
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.side_effect = ParamValidationError(
-        report="Invalid request parameters"
-    )
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with pytest.raises(BedrockAPIError):
-        client.generate_text("Say hello")
-
-    mock_runtime.converse.assert_called_once()
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_malformed_response_missing_content(mock_boto_client):
-    """
-    A Bedrock response missing output.message.content should raise
-    BedrockResponseFormatError without retrying.
-    """
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.return_value = {
-        "output": {
-            "message": {},
-        }
-    }
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with pytest.raises(BedrockResponseFormatError):
-        client.generate_text("Say hello")
-
-    mock_runtime.converse.assert_called_once()
-
-
-@patch("app.core.llm_client.boto3.client")
-def test_generate_text_malformed_response_empty_content(mock_boto_client):
-    """
-    A Bedrock response with an empty content list should raise
-    BedrockResponseFormatError without retrying.
-    """
-    mock_runtime = MagicMock()
-
-    mock_runtime.converse.return_value = {
-        "output": {
-            "message": {
-                "content": [],
-            }
-        }
-    }
-
-    mock_boto_client.return_value = mock_runtime
-
-    client = BedrockClient()
-
-    with pytest.raises(BedrockResponseFormatError):
-        client.generate_text("Say hello")
-
-    mock_runtime.converse.assert_called_once()
-
-
-# --------------------------------------------------------------------------
-# Live integration smoke test — skipped by default
-# --------------------------------------------------------------------------
-
-RUN_LIVE = os.getenv("RUN_LIVE_AWS_TESTS", "").strip() == "1"
-
-
-@pytest.mark.skipif(
-    not RUN_LIVE,
-    reason=(
-        "Live AWS test skipped by default. Set RUN_LIVE_AWS_TESTS=1 to run it "
-        "against a real Bedrock endpoint (requires valid AWS credentials and "
-        "model access). Example:\n"
-        "  RUN_LIVE_AWS_TESTS=1 pytest tests/test_llm_client.py -v -s"
-    ),
-)
-def test_generate_text_live_smoke_test():
-    """
-    Sends one real request to Bedrock using app.config.config and checks
-    that a non-empty text response comes back.
-
-    This is the test that actually proves your AWS credentials, configured
-    region, and configured Bedrock model access are working end-to-end.
-    """
-    client = BedrockClient()
-
-    result = client.generate_text(
-        prompt="Reply with exactly the single word: OK",
-        max_tokens=10,
-    )
-
-    print(f"\nBedrock response: {result!r}")
-
-    assert isinstance(result, str)
-    assert len(result.strip()) > 0
+def test_malformed_response_is_safe(transport):
+    transport[1].append(httpx.Response(200,json={'choices':[]}))
+    with pytest.raises(llm.LLMResponseFormatError):
+        llm.GroqClient().generate_text('question')

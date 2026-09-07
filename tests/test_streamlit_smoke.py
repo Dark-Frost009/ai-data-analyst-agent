@@ -10,7 +10,7 @@ MAIN_FILE = PROJECT_ROOT / "app" / "main.py"
 
 
 def test_initial_streamlit_screen_renders_without_errors() -> None:
-    """The unauthenticated, no-dataset state must render without AWS access."""
+    """The unauthenticated, no-dataset state must render without external provider access."""
 
     app = AppTest.from_file(str(MAIN_FILE))
     app.run(timeout=15)

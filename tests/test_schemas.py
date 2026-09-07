@@ -4,7 +4,7 @@ Tests for app.models.schemas.
 These tests verify the Pydantic data contracts shared between the
 different stages of the AI Data Analyst Agent pipeline.
 
-No Streamlit, AWS, DuckDB, or network access is required.
+No Streamlit, external provider, DuckDB, or network access is required.
 """
 
 import json

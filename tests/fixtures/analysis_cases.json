@@ -1,0 +1,69 @@
+[
+  {
+    "name": "count",
+    "question": "How many rows are there?",
+    "response": "SELECT COUNT(*) AS n FROM dataset",
+    "expected": [
+      {
+        "n": 4
+      }
+    ]
+  },
+  {
+    "name": "aggregate-ranking",
+    "question": "Which two artists have the highest average gross?",
+    "response": "SELECT Artist, AVG(gross) AS average FROM dataset GROUP BY Artist ORDER BY average DESC, Artist LIMIT 2",
+    "expected": [
+      {
+        "Artist": "C",
+        "average": 8000000.0
+      },
+      {
+        "Artist": "A",
+        "average": 4000000.0
+      }
+    ]
+  },
+  {
+    "name": "money-with-year",
+    "question": "Which artists in year 2015 had gross over $5 million?",
+    "response": "SELECT Artist FROM dataset WHERE Year = 2015 AND gross > 1000000 ORDER BY Artist",
+    "expected": [
+      {
+        "Artist": "A"
+      },
+      {
+        "Artist": "C"
+      }
+    ]
+  },
+  {
+    "name": "unknown-money-vocabulary",
+    "question": "Which artists in year 2015 had box office over $5 million?",
+    "response": "SELECT Artist FROM dataset WHERE Year = 2015 AND \"box office\" > 5000000 ORDER BY Artist",
+    "expected": [
+      {
+        "Artist": "A"
+      },
+      {
+        "Artist": "C"
+      }
+    ]
+  },
+  {
+    "name": "keyword-literal",
+    "question": "Which artists have status DELETE?",
+    "response": "SELECT Artist FROM dataset WHERE status = 'DELETE'",
+    "expected": [
+      {
+        "Artist": "A"
+      }
+    ]
+  },
+  {
+    "name": "empty-result",
+    "question": "Which artists had more than 100 shows?",
+    "response": "SELECT Artist FROM dataset WHERE Shows > 100",
+    "expected": []
+  }
+]

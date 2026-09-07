@@ -7,7 +7,7 @@ types, null/unique statistics, numeric min/max/mean where applicable, and
 a small JSON-safe sample of rows.
 
 This module is intentionally narrow in scope: it only *observes* the
-DataFrame. It never mutates it, never touches DuckDB, Streamlit, or AWS,
+DataFrame. It never mutates it, never touches DuckDB, Streamlit, or external provider,
 and does not attempt analysis (outliers, correlations, duplicates) —
 that belongs to later, LLM/SQL-driven milestones.
 
