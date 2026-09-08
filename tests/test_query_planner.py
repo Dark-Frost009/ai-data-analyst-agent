@@ -820,3 +820,30 @@ def test_sql_literals_are_not_operations(value):
 def test_count_of_monetary_column_is_not_a_monetary_threshold():
     sql = 'SELECT COUNT(gross) FROM dataset HAVING COUNT(gross) > 10'
     assert QueryPlanner._correct_explicit_monetary_threshold('count gross values over $5 million',sql) == sql
+
+
+@pytest.mark.parametrize('sql', [
+    'WITH x AS (SELECT 1 AS n) SELECT n FROM x',
+    'WITH x AS (SELECT * FROM dataset) SELECT * FROM x',
+])
+def test_extract_sql_accepts_with_prefixed_select(sql):
+    """SQLGlot attaches WITH to Select; extraction must preserve CTE queries."""
+    assert QueryPlanner._extract_sql(sql) == sql
+
+
+def test_plan_cte_response_validates_and_executes():
+    """Exercise CTE output through planning, scope checks and real DuckDB."""
+    import pandas as pd
+    from app.core.data_profiler import profile_dataframe
+    from app.core.sql_executor import SQLExecutor
+    from app.utils.security import validate_sql
+
+    dataframe = pd.DataFrame({'sales': [100, 200, 300]})
+    response = 'WITH selected AS (SELECT sales FROM dataset WHERE sales > 100) SELECT SUM(sales) AS total FROM selected'
+    planner = QueryPlanner(llm_client=_mock_llm(response))
+    sql = planner.plan('What is total sales for rows with sales above 100?', profile_dataframe(dataframe))
+    validation = validate_sql(sql, allowed_tables=['dataset'])
+    assert validation.is_valid
+    with SQLExecutor(dataframe) as executor:
+        result = executor.execute(validation)
+    assert result.dataframe.to_dict('records') == [{'total': 500}]

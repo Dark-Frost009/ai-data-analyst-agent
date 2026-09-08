@@ -19,3 +19,9 @@ outputs/
 # Operating-system files
 .DS_Store
 Thumbs.db
+# Local test reports and one-off publishing tools
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+publish_reviewed.py
