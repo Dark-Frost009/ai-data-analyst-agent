@@ -956,7 +956,7 @@ https://github.com/Dark-Frost009
 **Deployed on Streamlit Community Cloud with Groq and a shared password gate.**
 
 - Live app: [groq-data-analyst.streamlit.app](https://groq-data-analyst.streamlit.app/).
-- Local validation (September 8, 2026): 360 tests passed on Python 3.12.7, with 88.49% coverage, including WITH-prefixed query planning and execution.
+- Local validation (September 13, 2026): 363 tests passed on Python 3.12.7, with 88.62% coverage, following an external code review that fixed a DuckDB timeout/close race condition, a data-profiling type-inference edge case, and dead-code/documentation inconsistencies.
 - [GitHub Actions run #14](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/runs/34142933104) passed Python 3.11 tests and Docker build/startup health checks for commit `4647d8f`.
 - A manual live check using the bundled synthetic CSV returned the expected artists **A and C** for “Which artists in year 2015 had gross over $5 million?” The public password gate was also checked independently.
 
