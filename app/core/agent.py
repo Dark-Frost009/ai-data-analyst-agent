@@ -89,14 +89,6 @@ class AgentExecutionError(AgentError):
     """Raised when validated SQL execution fails."""
 
 
-class AgentExplanationError(AgentError):
-    """Raised when explanation generation fails."""
-
-
-class AgentChartError(AgentError):
-    """Raised when chart generation fails."""
-
-
 class AgentCapacityError(AgentError):
     """Raised when this application process is already at analysis capacity."""
 
@@ -335,13 +327,14 @@ class DataAnalystAgent:
         AgentExecutionError
             If validated SQL cannot be executed.
 
-        AgentExplanationError
-            If explanation generation fails.
+        Notes
+        -----
+        Explanation and chart generation failures do not raise. They are
+        recorded as human-readable strings in ``AgentResult.warnings``,
+        and the rest of the result (query result, validated SQL, etc.)
+        is still returned normally.
 
-        AgentChartError
-            If chart generation fails.
         """
-
         if not isinstance(question, str) or not question.strip():
             raise ValueError(
                 "question must be a non-empty string"

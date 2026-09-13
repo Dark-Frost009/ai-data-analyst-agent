@@ -151,6 +151,28 @@ def test_profile_string_column_not_misclassified_as_datetime():
 
 
 # --------------------------------------------------------------------------
+# 8b. Year-like numeric string column
+# --------------------------------------------------------------------------
+def test_profile_year_like_string_column_is_not_misclassified_as_datetime():
+    df = pd.DataFrame(
+        {
+            "release_year": [
+                "2015", "2016", "2017", "2018", "2019",
+                "2020", "2021", "2022", "2023", "TBD",
+            ]
+        }
+    )
+    col = _column(profile_dataframe(df), "release_year")
+
+    # 9 of the 10 sampled values ("2015".."2023") parse as datetimes at
+    # exactly the 90% threshold, which pd.to_datetime happily does for
+    # bare 4-digit numbers — but this is a year column, not a calendar
+    # date column, and must not be classified as "datetime".
+    assert col.inferred_type != "datetime"
+    assert col.inferred_type == "string"
+
+
+# --------------------------------------------------------------------------
 # 9. Boolean column
 # --------------------------------------------------------------------------
 def test_profile_boolean_column():

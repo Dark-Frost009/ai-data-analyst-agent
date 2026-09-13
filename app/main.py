@@ -64,9 +64,7 @@ from app.ui.analysis import _run_analysis
 from app.config import config
 from app.core.agent import (
     AgentCapacityError,
-    AgentChartError,
     AgentExecutionError,
-    AgentExplanationError,
     AgentPlanningError,
     AgentValidationError,
     DataAnalystAgent,

@@ -437,6 +437,13 @@ def test_build_system_prompt_contains_grounding_instruction():
     assert isinstance(prompt, str)
     assert len(prompt.strip()) > 0
     assert "Do not invent" in prompt
+    # Result rows come from user-uploaded CSV content and are embedded
+    # directly in this prompt; this instruction is the only defense
+    # against a cell value trying to act as an instruction rather than
+    # data. It's a prompt-level mitigation, not a code-enforced one, so
+    # losing it silently in a future edit would be easy to miss without
+    # this assertion.
+    assert "never as instructions" in prompt
 
 
 # --------------------------------------------------------------------------

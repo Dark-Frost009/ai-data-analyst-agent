@@ -831,6 +831,15 @@ host when you analyze**:
 - Follow-up context stays in the browser's server session until cleared or
   lost, and is sent again with follow-up planning requests.
 
+Because dataset values are embedded directly in both prompts, a cell
+could in principle contain text written to look like an instruction to
+the model (a prompt-injection attempt). Both prompts explicitly instruct
+the model to treat all such values as data, never as instructions, but
+this is a prompt-level mitigation, not a code-enforced one — the model
+could still be misled into producing a misleading explanation. This does
+not affect SQL safety: the security validator and DuckDB execution
+boundary are independent of prompt content and are not weakened by it.
+
 Use synthetic or non-sensitive data for the demo. No automatic redaction
 or provider data-retention guarantee is implemented. Review the provider's
 [Your Data documentation](https://console.groq.com/docs/your-data) for your

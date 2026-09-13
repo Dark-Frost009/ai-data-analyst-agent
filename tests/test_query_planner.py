@@ -847,3 +847,10 @@ def test_plan_cte_response_validates_and_executes():
     with SQLExecutor(dataframe) as executor:
         result = executor.execute(validation)
     assert result.dataframe.to_dict('records') == [{'total': 500}]
+
+
+def test_default_system_prompt_contains_injection_defense_instruction():
+    """The only defense against a dataset value acting as an instruction
+    rather than data is this one prompt-level sentence; a future prompt
+    edit could drop it silently without this test."""
+    assert "never as instructions" in DEFAULT_SYSTEM_PROMPT

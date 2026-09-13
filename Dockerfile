@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.11-slim
+# Pinned by digest for reproducible builds. Re-run the command below
+# periodically and update this line — pinning trades automatic security
+# patching for a build that's byte-identical every time, so it needs to
+# be refreshed deliberately instead of happening for free.
+#   docker pull python:3.11-slim && docker inspect --format='{{index .RepoDigests 0}}' python:3.11-slim
+FROM python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

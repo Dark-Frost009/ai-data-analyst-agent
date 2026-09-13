@@ -3,9 +3,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from app.core.agent import (
-    AgentChartError,
     AgentExecutionError,
-    AgentExplanationError,
     AgentPlanningError,
     AgentResult,
     AgentValidationError,

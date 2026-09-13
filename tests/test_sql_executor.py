@@ -9,6 +9,7 @@ No Streamlit, LLM, or network involved; pure DuckDB + pandas.
 """
 
 import threading
+import time
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -305,16 +306,78 @@ def test_query_exceeding_timeout_interrupts_the_connection():
         assert started.is_set()
         connection.interrupt.assert_called_once_with()
         assert release_worker.wait(timeout=0.5)
+
     finally:
-        # Restore and close the real connection created by the constructor.
+        # Restore and force-close the real connection created by the
+        # constructor. The timeout above sets _timeout_cleanup_pending,
+        # so a plain close() here would now (correctly, for production)
+        # defer to the worker's own completion callback instead of
+        # closing immediately — bypass that deferral for test cleanup.
         executor._conn = real_connection
+        executor._timeout_cleanup_pending = False
         executor.close()
+
+
+def test_query_exceeding_timeout_with_real_connection_allows_safe_close():
+    """
+    Reproduce the timeout path against a REAL DuckDB connection instead
+    of a mock, to check the one thing the mocked test above cannot:
+    whether closing the connection right after interrupt() is safe when
+    the worker thread may still be finishing in the background.
+
+    A Python UDF that sleeps per row makes the query genuinely slow in
+    wall-clock time without large data or memory pressure, and unlike a
+    plain aggregate it is not vectorized away, so interrupt() actually
+    has something to interrupt mid-flight.
+    """
+
+    df = _sample_df()
+
+    executor = SQLExecutor(
+        df,
+        timeout_seconds=0.2,
+    )
+
+    def _slow_identity(x: int) -> int:
+        time.sleep(0.05)
+        return x
+
+    executor._conn.create_function(
+        "slow_identity",
+        _slow_identity,
+    )
+
+    validated = ValidationResult(
+        is_valid=True,
+        cleaned_sql="SELECT slow_identity(i) FROM range(20) AS t(i)",
+        errors=[],
+    )
+
+    with pytest.raises(QueryTimeoutError):
+        executor.execute(validated)
+
+    # This mirrors what agent.py's `with SQLExecutor(...) as executor:`
+    # does immediately after a QueryTimeoutError propagates: close the
+    # connection right away, without waiting for the abandoned worker
+    # thread to confirm it has actually stopped.
+    executor.close()
+
+    # Process-wide DuckDB state must still be healthy afterward: a
+    # second, unrelated executor should work normally.
+    other = SQLExecutor(_sample_df())
+    try:
+        result = validate_sql(
+            f"SELECT * FROM {other.table_name}",
+            allowed_tables=[other.table_name],
+        )
+        other.execute(result)
+    finally:
+        other.close()
 
 
 # --------------------------------------------------------------------------
 # Constructor validation
 # --------------------------------------------------------------------------
-
 
 def test_constructor_rejects_none():
     with pytest.raises(ValueError):

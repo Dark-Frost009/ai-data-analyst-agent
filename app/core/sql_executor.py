@@ -129,6 +129,12 @@ class SQLExecutor:
         self._conn = self._create_connection()
         self._conn.register(self._table_name, self._df)
 
+        # Set only when a query times out. It means the worker thread
+        # may still be running, so ownership of closing self._conn has
+        # been handed to that thread's own completion callback instead
+        # of the caller — see close() and _close_after_worker_finishes().
+        self._timeout_cleanup_pending = False
+
         logger.info(
             "SQLExecutor initialized | table=%s | rows=%d | "
             "memory_limit=%s | threads=%s | timeout=%ss",
@@ -221,6 +227,13 @@ class SQLExecutor:
 
     def close(self) -> None:
         """Close the underlying DuckDB connection."""
+        if self._timeout_cleanup_pending:
+            # A prior query timed out and its worker thread may still
+            # be executing against this connection. Closing here would
+            # race with it; the thread's own completion callback will
+            # close the connection safely once it actually finishes.
+            return
+
         self._conn.close()
 
     def __enter__(self) -> "SQLExecutor":
@@ -277,8 +290,15 @@ class SQLExecutor:
         because its implicit shutdown(wait=True) would block the caller
         after a timeout until the worker thread finished.
 
-        Instead, shutdown(wait=False) lets this method return promptly
-        after interrupting the DuckDB connection.
+        Instead, after a timeout, interrupt() is requested and this
+        method returns immediately. interrupt() is cooperative and can
+        take an unbounded amount of time to actually take effect (for
+        example, a slow per-row callback may not yield back to DuckDB
+        until it finishes), so the connection is never closed by the
+        thread that hits the timeout. Ownership of closing it is
+        instead handed to the worker thread's own completion callback,
+        which only runs once that thread is provably done — see
+        close().
         """
 
         def _run() -> pd.DataFrame:
@@ -298,8 +318,14 @@ class SQLExecutor:
 
         except concurrent.futures.TimeoutError:
             # DuckDB's Python API exposes interrupt() as the practical
-            # cooperative cancellation mechanism.
+            # cooperative cancellation mechanism. It does not guarantee
+            # the worker thread has already stopped by the time this
+            # call returns, so this thread must never close self._conn
+            # itself — see close() and _close_after_worker_finishes().
             self._conn.interrupt()
+
+            self._timeout_cleanup_pending = True
+            future.add_done_callback(self._close_after_worker_finishes)
 
             pool.shutdown(wait=False)
 
@@ -318,6 +344,26 @@ class SQLExecutor:
         else:
             pool.shutdown(wait=False)
             return result
+
+    def _close_after_worker_finishes(self, future) -> None:
+        """
+        Close self._conn once the timed-out worker thread is done.
+
+        Registered via future.add_done_callback() only after a timeout,
+        so this runs exactly once — in whichever thread notices the
+        worker has actually finished (the worker thread itself in the
+        common case, or immediately in the caller's thread if the
+        worker had already finished by the time the callback was
+        registered). Either way, the worker is guaranteed to no longer
+        be touching the connection by the time this runs.
+        """
+        try:
+            self._conn.close()
+        except Exception:
+            logger.exception(
+                "Error closing a DuckDB connection after a timed-out "
+                "query finished in the background"
+            )
 
 
 def _fetch_dataframe(cursor) -> pd.DataFrame:

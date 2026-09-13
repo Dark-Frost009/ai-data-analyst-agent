@@ -1,7 +1,7 @@
 """Analysis action and safe user-facing error mapping."""
 import streamlit as st
-from app.core.agent import (AgentCapacityError, AgentChartError, AgentExecutionError,
-    AgentExplanationError, AgentPlanningError, AgentValidationError)
+from app.core.agent import (AgentCapacityError, AgentExecutionError,
+    AgentPlanningError, AgentValidationError)
 from app.core.query_planner import MAX_CONVERSATION_TURNS
 from app.utils.logger import get_logger
 logger = get_logger(__name__)
@@ -55,16 +55,6 @@ def _run_analysis(
             )
             return
 
-        except AgentExplanationError as exc:
-
-            logger.exception("Explanation generation failed")
-
-            st.error(
-                "⚠️ The SQL analysis completed, but generating "
-                "the explanation failed."
-            )
-            return
-
         except AgentValidationError as exc:
 
             logger.exception("SQL validation failed")
@@ -80,16 +70,6 @@ def _run_analysis(
 
             st.error(
                 "❌ The validated SQL could not be executed."
-            )
-            return
-
-        except AgentChartError as exc:
-
-            logger.exception("Chart generation failed")
-
-            st.error(
-                "⚠️ The analysis completed, but the visualization "
-                "could not be generated."
             )
             return
 

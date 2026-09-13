@@ -197,7 +197,29 @@ def _looks_like_datetime(non_null: pd.Series) -> bool:
         return False
 
     success_ratio = parsed.notna().sum() / len(sample)
-    return success_ratio >= _DATETIME_DETECTION_THRESHOLD
+    if success_ratio < _DATETIME_DETECTION_THRESHOLD:
+        return False
+
+    # A column of plain 4-digit numbers ("2020", "1999", ...) parses as
+    # datetimes with a high success ratio, but almost always represents
+    # a year number rather than an actual calendar date. Require that
+    # most of the sample isn't bare year-like strings before trusting
+    # the parse, so this stays specific to that one known ambiguity
+    # instead of rejecting genuinely separated ("2020-01-01") or
+    # unambiguous eight-digit ("20200115") date strings.
+    year_like_ratio = sum(
+        _is_bare_year_like_string(value) for value in sample
+    ) / len(sample)
+    if year_like_ratio >= _DATETIME_DETECTION_THRESHOLD:
+        return False
+
+    return True
+
+
+def _is_bare_year_like_string(value: Any) -> bool:
+    """True for a plain 4-digit numeric string, e.g. "2020" or "1999"."""
+    text = str(value).strip()
+    return len(text) == 4 and text.isdigit()
 
 
 def _json_safe(value: Any) -> Any:
