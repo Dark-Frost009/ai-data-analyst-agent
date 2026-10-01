@@ -60,14 +60,14 @@ The application uses **Groq** to translate natural-language analytical questions
 The Query Planner:
 
 - Understands analytical intent.
-- Inspects the dataset profile.
+- Inspects the profile of the prepared execution DataFrame.
 - Uses only columns that exist in the dataset.
 - Preserves exact column names.
 - Generates read-only SQL.
 - Handles aggregation, filtering, grouping, ordering, ranking, and limits.
 - Handles numeric values stored as text.
 - Handles currency-formatted values.
-- Handles date and timestamp values stored as text.
+- Uses normalized datetime columns directly and treats remaining text dates conservatively.
 - Applies deterministic corrections for explicit monetary thresholds.
 
 The LLM is responsible for generating the analytical query, while security validation is handled independently.
@@ -149,6 +149,44 @@ The application deliberately avoids unsupported or unsafe SQL functions such as 
 
 ---
 
+### 📅 Conservative Date Preparation
+
+Uploads retain their original values and dtypes for preview. Before planning,
+`execution_preparation.py` creates a separate DataFrame copy and normalizes
+only confidently detected calendar-date columns:
+
+- ISO dates in `YYYY-MM-DD` format.
+- US slash dates in `M/D/YYYY` or `MM/DD/YYYY` format, with at least one
+  day greater than 12 to establish month/day ordering.
+- Every non-null value must match the same format and parse successfully.
+
+Bare years, ambiguous dates such as a column containing only `12/7/2023`
+and `1/2/2022`, mixed formats, invalid dates and unsupported values remain
+unchanged. Null positions are preserved. Existing datetime dtypes, including
+timezones, are retained. This initial layer does not normalize currency,
+percentages, booleans or other numeric text.
+
+The prepared DataFrame is re-profiled. The Query Planner receives that
+execution profile, and SQLExecutor receives the same prepared DataFrame.
+The planner uses `pandas_dtype` as the physical type; semantic inference alone
+does not mean a text column has become a datetime column.
+
+For normalized datetime columns, predicates and date functions use the column
+directly:
+
+```sql
+SELECT "First_Name", "Last_Name"
+FROM "dataset"
+WHERE "Join_Date" > DATE '2022-12-31'
+```
+
+The planner is instructed not to wrap normalized dates in `TRY_CAST` or
+`TRY_STRPTIME`, and not to guess formats for ambiguous or mixed text dates.
+Future safe coercions can extend this preparation layer. CSV loading, SQL
+execution, validation and runtime protections retain their existing roles.
+
+---
+
 ### 💰 Explicit Monetary Threshold Handling
 
 The Query Planner includes deterministic handling for explicit monetary quantities.
@@ -208,6 +246,12 @@ The application follows a controlled pipeline that separates data processing, AI
                            │
                            ▼
                   ┌─────────────────┐
+                  │ Prepare Typed   │
+                  │ Copy + Profile  │
+                  └────────┬────────┘
+                           │
+                           ▼
+                  ┌─────────────────┐
                   │  Query Planner  │
                   │      Groq       │
                   └────────┬────────┘
@@ -253,14 +297,15 @@ The application follows a controlled pipeline that separates data processing, AI
 4. The user asks an analytical question in natural language. For a
    follow-up, the planner may also receive bounded context from prior
    successful turns in the same browser session.
-5. The Query Planner receives the question and dataset profile.
+5. The agent prepares a typed copy and re-profiles it; the Query Planner receives
+   the question and execution profile.
 6. Groq generates a DuckDB-compatible SQL query.
 7. The generated SQL is treated as untrusted input.
 8. SQLGlot parses and validates the SQL.
 9. Security rules verify that the query is read-only and accesses only approved resources.
 10. Unsafe or invalid SQL is rejected.
 11. Valid SQL is passed to the SQL Executor.
-12. DuckDB executes the analytical query.
+12. DuckDB executes the analytical query against the prepared execution DataFrame.
 13. The result is processed by the application.
 14. The Chart Generator determines whether a visualization is useful.
 15. The Explainer generates a concise analytical interpretation.
@@ -469,6 +514,7 @@ ai-data-analyst-agent/
 │   │   ├── chart_generator.py
 │   │   ├── data_loader.py
 │   │   ├── data_profiler.py
+│   │   ├── execution_preparation.py
 │   │   ├── explainer.py
 │   │   ├── llm_client.py
 │   │   ├── query_planner.py
@@ -504,6 +550,7 @@ ai-data-analyst-agent/
 │   ├── test_chart_generator.py
 │   ├── test_data_loader.py
 │   ├── test_data_profiler.py
+│   ├── test_execution_preparation.py
 │   ├── test_explainer.py
 │   ├── test_llm_client.py
 │   ├── test_query_planner.py
@@ -708,6 +755,8 @@ The test suite covers:
 - Chart generation
 - Data loading
 - Data profiling
+- Conservative date preparation, source immutability and null preservation
+- Execution-schema alignment and the employee-after-2022 regression
 - Explanation generation
 - LLM client behavior
 - Query planning
@@ -762,7 +811,11 @@ Each component has a focused responsibility:
 ```text
 Data Loader
      ↓
-Data Profiler
+Raw Data Profiler
+     ↓
+Execution Preparation (typed copy)
+     ↓
+Execution Data Profiler
      ↓
 Query Planner
      ↓
@@ -956,8 +1009,9 @@ https://github.com/Dark-Frost009
 **Deployed on Streamlit Community Cloud with Groq and a shared password gate.**
 
 - Live app: [groq-data-analyst.streamlit.app](https://groq-data-analyst.streamlit.app/).
-- Local validation (September 13, 2026): 363 tests passed on Python 3.12.7, with 88.62% coverage, following an external code review that fixed a DuckDB timeout/close race condition, a data-profiling type-inference edge case, and dead-code/documentation inconsistencies.
-- [GitHub Actions run #14](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/runs/34142933104) passed Python 3.11 tests and Docker build/startup health checks for commit `4647d8f`.
+- Local validation (October 2, 2026): **387 tests passed** on Python 3.12.7, with **88.97% coverage**; the focused preparation, agent, planner, profiler and executor run passed **137 tests**.
+- [GitHub Actions validation](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/runs/36924788796) passed Python 3.11 tests and Docker build/startup health checks for the typed-execution fix, commit `fb16dba`.
+- Local execution against `Messy_Employee_dataset.csv` returned 445 rows for employees joining after 2022. The hosted query still needs manual verification after refreshing and re-uploading the CSV.
 - A manual live check using the bundled synthetic CSV returned the expected artists **A and C** for “Which artists in year 2015 had gross over $5 million?” The public password gate was also checked independently.
 
 This is a deployment smoke check, not a comprehensive model-accuracy evaluation.
