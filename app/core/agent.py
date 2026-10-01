@@ -41,6 +41,7 @@ Those responsibilities belong to:
 from __future__ import annotations
 from dataclasses import dataclass, field
 from functools import wraps
+import weakref
 from time import perf_counter
 from typing import Any, Dict, Mapping, Optional, Sequence
 
@@ -51,7 +52,9 @@ from app.core.data_profiler import profile_dataframe
 from app.core.execution_preparation import prepare_execution_dataframe
 from app.config import config
 from app.core.explainer import ExplainerError, explain_query_result
-from app.core.query_planner import QueryPlanner, QueryPlannerError
+from app.core.semantic_checks import SemanticConversionError, check_conversion_fidelity
+from app.utils.dataset_resources import (DatasetResourceError, check_dataframe_limits, dataset_memory_budget, dataset_preparation_slot)
+from app.core.query_planner import QueryInputError, QueryPlanner, QueryPlannerError
 from app.core.sql_executor import (
     QueryExecutionError,
     QueryTimeoutError,
@@ -85,6 +88,10 @@ class AgentValidationError(AgentError):
 
 class AgentPlanningError(AgentError):
     """Raised when SQL generation/planning fails."""
+
+
+class AgentDataError(AgentError):
+    """The requested analysis would silently lose or misinterpret values."""
 
 
 class AgentExecutionError(AgentError):
@@ -211,6 +218,7 @@ class DataAnalystAgent:
         max_explanation_rows: int = DEFAULT_MAX_EXPLANATION_ROWS,
         max_chart_rows: int = DEFAULT_MAX_CHART_ROWS,
         max_categories: int = DEFAULT_MAX_CATEGORIES,
+        disk_dataset=None,
     ) -> None:
         if not isinstance(dataframe, pd.DataFrame):
             raise ValueError(
@@ -245,8 +253,16 @@ class DataAnalystAgent:
 
         self._dataframe = dataframe
         self._dataset_profile = dataset_profile
-        self._execution_dataframe = prepare_execution_dataframe(dataframe)
-        self._execution_profile = profile_dataframe(self._execution_dataframe)
+        self._disk_dataset = disk_dataset
+        with dataset_preparation_slot():
+            reservation = dataset_memory_budget.reserve(check_dataframe_limits(dataframe))
+            try:
+                self._execution_dataframe = (disk_dataset.convert(dataframe) if disk_dataset else prepare_execution_dataframe(dataframe))
+                self._execution_profile = (disk_dataset.execution_profile if disk_dataset else profile_dataframe(self._execution_dataframe))
+            except Exception:
+                reservation.release()
+                raise
+        self._memory_finalizer = weakref.finalize(self, reservation.release)
         self._query_planner = (
             query_planner
             if query_planner is not None
@@ -265,6 +281,16 @@ class DataAnalystAgent:
             len(dataframe.columns),
             max_result_rows,
         )
+
+    def release_dataset(self):
+        """Release a retired session's memory reservation. Do not reuse this agent."""
+        self._dataframe = pd.DataFrame()
+        self._execution_dataframe = pd.DataFrame()
+        self._dataset_profile = None
+        self._execution_profile = None
+        self._memory_finalizer()
+        if self._disk_dataset is not None:
+            self._disk_dataset.close()
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -354,6 +380,8 @@ class DataAnalystAgent:
                 "question must be a non-empty string"
             )
 
+        if not self._memory_finalizer.alive:
+            raise AgentDataError("This dataset has been cleared. Upload it again before analyzing.")
         question = question.strip()
 
         logger.info(
@@ -374,10 +402,12 @@ class DataAnalystAgent:
                 conversation_context=conversation_context,
             )
 
+        except QueryInputError as exc:
+            raise AgentDataError(str(exc)) from None
         except QueryPlannerError as exc:
             logger.warning(
                 "Query planning failed: %s",
-                exc,
+                type(exc).__name__,
             )
 
             raise AgentPlanningError(
@@ -406,10 +436,12 @@ class DataAnalystAgent:
         # 2. SQL executor + security validation
         # ------------------------------------------------------------------
 
-        with SQLExecutor(
-            self._execution_dataframe,
-            max_result_rows=self._max_result_rows,
-        ) as executor:
+        if self._disk_dataset is not None:
+            from app.core.disk_dataset import DiskSQLExecutor
+            execution_context = DiskSQLExecutor(self._disk_dataset, self._max_result_rows)
+        else:
+            execution_context = SQLExecutor(self._execution_dataframe, max_result_rows=self._max_result_rows)
+        with execution_context as executor:
 
             table_name = executor.table_name
 
@@ -444,7 +476,7 @@ class DataAnalystAgent:
                 logger.warning(
                     "Generated SQL rejected by security layer | "
                     "errors=%s",
-                    combined_errors,
+                    [error.code for error in validation.errors],
                 )
 
                 raise AgentValidationError(
@@ -477,6 +509,14 @@ class DataAnalystAgent:
             # 3. Execute ONLY validated SQL
             # ----------------------------------------------------------------
 
+            try:
+                if self._disk_dataset is not None:
+                    self._disk_dataset.check_conversions(validation.cleaned_sql)
+                else:
+                    check_conversion_fidelity(validation.cleaned_sql, self._execution_dataframe)
+            except (SemanticConversionError, DatasetResourceError) as exc:
+                raise AgentDataError(str(exc)) from None
+
             execution_started_at = perf_counter()
 
             try:
@@ -492,7 +532,7 @@ class DataAnalystAgent:
 
                 logger.warning(
                     "SQL execution failed: %s",
-                    exc,
+                    type(exc).__name__,
                 )
 
                 raise AgentExecutionError(
@@ -540,7 +580,7 @@ class DataAnalystAgent:
                 except ExplainerError as exc:
                     logger.warning(
                         "Explanation generation failed: %s",
-                        exc,
+                        type(exc).__name__,
                     )
                     warnings.append(
                         "The query succeeded, but an explanation could not "
@@ -583,7 +623,7 @@ class DataAnalystAgent:
 
                     logger.warning(
                         "Chart generation failed: %s",
-                        exc,
+                        type(exc).__name__,
                     )
                     warnings.append(
                         "The query succeeded, but a visualization could not "

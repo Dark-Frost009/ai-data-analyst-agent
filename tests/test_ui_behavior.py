@@ -99,6 +99,29 @@ def test_replacing_same_filename_resets_analysis(uploaded_app):
     assert app.session_state.last_result is None
     assert app.session_state.conversation_history == []
 
+
+def test_large_upload_queries_all_rows_and_cleans_up(uploaded_app):
+    app, current, _ = uploaded_app
+    pair = b'A,100,' + b'x' * 100 + b'\nB,100,' + b'x' * 100 + b'\n'
+    content = b'product,sales,note\n' + pair * 6000
+    replacement = BytesIO(content)
+    replacement.name = 'large.csv'
+    replacement.size = len(content)
+    replacement.file_id = 'large'
+    current[0] = replacement
+    app.run(timeout=30)
+    assert not app.exception
+    assert app.session_state.dataset_profile.row_count == 12000
+    assert len(app.session_state.dataframe) == 1000
+    assert any('SQL analyzes all 12,000 rows' in item.value for item in app.caption)
+    root = app.session_state.agent._disk_dataset.root
+    analyze(app)
+    assert app.session_state.last_result.query_result.dataframe.total_sales.sum() == 1200000
+    assert app.session_state.last_result.chart is not None
+    current[0] = None
+    button(app, 'Clear active dataset').click().run()
+    assert not root.exists()
+
 def test_chart_failure_preserves_successful_result(uploaded_app, monkeypatch):
     app, _, _ = uploaded_app
 
@@ -135,3 +158,51 @@ def test_explanation_failure_preserves_successful_result(uploaded_app, monkeypat
     assert app.session_state.last_result is not None
     assert app.session_state.last_result.query_result.dataframe.to_dict('records') == [
         {'product': 'A', 'total_sales': 400}, {'product': 'B', 'total_sales': 200}]
+
+
+def test_failed_replacement_pauses_analysis_and_valid_retry_resumes(uploaded_app):
+    app, current, _ = uploaded_app
+    analyze(app)
+    bad = BytesIO(b'a,b\n1,2,3\n')
+    bad.name = 'replacement.csv'
+    bad.size = len(bad.getvalue())
+    bad.file_id = 'rejected'
+    current[0] = bad
+    app.run()
+    assert not app.exception
+    assert app.session_state.upload_error is True
+    assert app.session_state.last_result is None
+    assert app.session_state.conversation_history == []
+    assert not app.text_area
+    assert any('Analysis is paused' in item.value for item in app.warning)
+    # Removing the rejected selection explicitly resumes the previous active file.
+    current[0] = None
+    app.run()
+    assert not app.session_state.upload_error
+    assert app.session_state.uploaded_filename == 'sales.csv'
+    assert app.text_area
+
+
+def test_chart_sampling_notice_is_rendered(uploaded_app):
+    import pandas as pd
+    from app.core.chart_generator import generate_chart
+    from app.models.schemas import QueryResult
+    app, _, _ = uploaded_app
+    analyze(app)
+    result = app.session_state.last_result
+    frame = pd.DataFrame({'month':pd.date_range('2020-01-01', periods=36, freq='MS'),'sales':range(36)})
+    result.chart = generate_chart(QueryResult(dataframe=frame,row_count=36,truncated=False),max_rows=20)
+    app.run()
+    assert not app.exception
+    captions = ' '.join(item.value for item in app.caption)
+    assert '16 rows are omitted' in captions
+    assert 'evenly spaced rows across the full range' in captions
+
+
+def test_conversion_warning_is_specific_and_preserves_no_stale_result(uploaded_app, monkeypatch):
+    from app.core.agent import AgentDataError
+    app, _, _ = uploaded_app
+    app.session_state.agent = Mock(run=Mock(side_effect=AgentDataError('Date conversion was stopped. Use unambiguous calendar dates.')))
+    analyze(app)
+    assert app.session_state.last_result is None
+    assert any('Date conversion was stopped' in item.value for item in app.warning)

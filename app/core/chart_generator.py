@@ -30,26 +30,12 @@ Core product rule
 "If the result can meaningfully communicate information visually,
 automatically visualize it. Do NOT generate meaningless charts."
 
-The DataFrame is always the primary signal for this decision. An optional
-`question`/`sql` string may be supplied purely as *supporting* context (for
-example, to prefer a ranked bar chart over a pie chart for a "top N"
-question) — they never override what the DataFrame itself supports, and a
-caller that omits them gets the same DataFrame-only behavior as before.
-
-High-cardinality categories
-----------------------------
-Bar, grouped_bar, and pie all cap themselves to `max_categories` rows.
-When the (already-aggregated) result has more distinct categories than
-that, the top categories are kept and everything beyond them is summed
-into a single synthetic "Other" row — never silently dropped. A result
-that was already constrained by the query itself (e.g. a generated
-`ORDER BY ... LIMIT 10` with the default max_categories=20) naturally
-ends up with nothing left over, so no "Other" row is fabricated in that
-case: whether "Other" appears is judged purely from how many distinct
-categories the returned DataFrame actually contains relative to
-max_categories, exactly the same DataFrame-first principle used
-everywhere else in this module. Chart specs that gained an "Other" row
-set `has_other: True` and `other_count: <n>` so the UI can say so.
+The DataFrame supplies the chart dimensions. Validated SQL supplies conservative
+additive-metric evidence: only simple SUM/non-distinct COUNT outputs authorize
+combining duplicate categories or an "Other" bucket. Unknown/non-additive metrics
+remain uncombined, and capped subsets disclose omissions. Extra grouping
+dimensions are never silently collapsed. Line/scatter sampling spans the full
+returned range and reports omitted rows and series.
 
 Design goals:
     - Never mutate the input DataFrame.
@@ -64,6 +50,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+import sqlglot
+from sqlglot import exp
 import numpy as np
 import pandas as pd
 
@@ -251,6 +239,17 @@ def generate_chart(
         )
         return None
 
+    additive = _additive_columns(sql)
+    if selected_type == "pie" and sql and numeric_columns[0] not in additive:
+        # Rates and averages are comparisons, not parts of an additive whole.
+        if chart_type is not None:
+            return None
+        selected_type = "bar"
+    category_type = selected_type in {"bar", "pie", "grouped_bar"}
+    if category_type and (len(categorical_columns) != 1 or datetime_columns):
+        return None
+    if selected_type == "line" and any(df[c].nunique(dropna=False) > 1 for c in categorical_columns):
+        return None
     if selected_type == "scatter":
         spec = _build_scatter_chart(
             df,
@@ -272,6 +271,7 @@ def generate_chart(
             categorical_columns,
             numeric_columns,
             max_categories=max_categories,
+            additive_columns=additive,
         )
 
     elif selected_type == "bar":
@@ -281,6 +281,7 @@ def generate_chart(
             numeric_columns,
             max_categories=max_categories,
             orientation="horizontal" if is_ranking else "vertical",
+            additive_columns=additive,
         )
 
     elif selected_type == "grouped_bar":
@@ -289,6 +290,7 @@ def generate_chart(
             categorical_columns,
             numeric_columns,
             max_categories=max_categories,
+            additive_columns=additive,
         )
 
     else:
@@ -309,6 +311,11 @@ def generate_chart(
         len(df.columns),
     )
 
+    spec["displayed_rows"] = len(spec["data"])
+    spec["input_rows"] = len(df)
+    spec.setdefault("omitted_rows", max(0, len(df) - len(spec["data"]) - spec.get("other_count", 0)))
+    selected_metrics = spec.get("y_columns") or [spec.get("y_column", spec.get("value_column"))]
+    spec["omitted_series"] = max(0, len(numeric_columns) - (2 if selected_type == "scatter" else len(selected_metrics)))
     return spec
 
 
@@ -424,11 +431,48 @@ def _looks_like_proportion(question: Optional[str]) -> bool:
 # --------------------------------------------------------------------------
 
 
+def _additive_columns(sql):
+    if not sql:
+        return set()
+    try:
+        tree = sqlglot.parse_one(sql, read="duckdb")
+    except sqlglot.errors.ParseError:
+        return set()
+    result = set()
+    if not isinstance(tree, exp.Select):
+        return result
+    group = tree.args.get("group")
+    if group is not None and any(group.args.get(key) for key in ("rollup", "cube", "grouping_sets")):
+        return result
+    for projection in tree.expressions:
+        body = projection.this if isinstance(projection, exp.Alias) else projection
+        if isinstance(body, (exp.Sum, exp.Count)) and not body.find(exp.Distinct):
+            result.add(projection.alias_or_name)
+    return result
+
+
+def _sample_rows(working, limit):
+    if len(working) <= limit:
+        return working
+    positions = np.linspace(0, len(working)-1, num=limit, dtype=int)
+    return working.iloc[positions]
+
+
+def _category_values(working, column):
+    if working[column].isna().any():
+        label = "Missing (NULL)"
+        while label in set(working[column].dropna()):
+            label += " (NULL)"
+        working[column] = working[column].astype(object).fillna(label)
+    return working
+
+
 def _apply_top_n_with_other(
     working: pd.DataFrame,
     category_column: str,
     value_columns: List[str],
     max_categories: int,
+    allow_other: bool = False,
 ) -> Tuple[pd.DataFrame, int]:
     """
     Cap an already-aggregated, descending-sorted-by-primary-metric
@@ -443,7 +487,9 @@ def _apply_top_n_with_other(
 
     - If there ARE more categories than `max_categories` allows, the
       top `max_categories - 1` categories are kept as-is and everything
-      else is summed into one synthetic "Other" row, preserving the
+      else is summed into one synthetic "Other" row only when allow_other
+      explicitly authorizes additive metrics. Otherwise the capped subset is
+      reported as omitted rows. An additive bucket preserves the
       total. "Other" is always appended last — it's a catch-all bucket,
       not a ranked value, so it is never re-sorted into the list by its
       (possibly large) aggregate value.
@@ -457,6 +503,11 @@ def _apply_top_n_with_other(
     if total_categories <= max_categories:
         return working.reset_index(drop=True), 0
 
+    if not allow_other:
+        return working.head(max_categories).reset_index(drop=True), 0
+    if "Other" in set(working[category_column]):
+        # Never collide a genuine category with the synthetic summary bucket.
+        return working.head(max_categories).reset_index(drop=True), 0
     keep = max(max_categories - 1, 0)
     top = working.head(keep)
     remainder = working.iloc[keep:]
@@ -467,7 +518,7 @@ def _apply_top_n_with_other(
     other_row: Dict[str, Any] = {category_column: "Other"}
 
     for column in value_columns:
-        other_row[column] = remainder[column].sum()
+        other_row[column] = remainder[column].sum(min_count=1)
 
     combined = pd.concat(
         [top, pd.DataFrame([other_row])],
@@ -483,6 +534,7 @@ def _build_bar_chart(
     numeric_columns: List[str],
     max_categories: int,
     orientation: str = "vertical",
+    additive_columns=None,
 ) -> Optional[Dict[str, Any]]:
     """
     Build a bar chart from categorical and numeric columns.
@@ -505,18 +557,20 @@ def _build_bar_chart(
 
     working = df[[category_column, value_column]].copy()
 
-    working = working.dropna(subset=[category_column, value_column])
+    working = _category_values(working, category_column).dropna(subset=[value_column])
 
     if working.empty:
         return None
 
     # Aggregate duplicate categories so the chart remains meaningful.
-    working = (
-        working.groupby(category_column, as_index=False)[value_column]
-        .sum()
-        .sort_values(value_column, ascending=False)
-        .reset_index(drop=True)
-    )
+    allow_sum = set([value_column]).issubset(additive_columns or set())
+    if working[category_column].duplicated().any():
+        if not allow_sum:
+            return None
+        working = working.groupby(category_column, as_index=False)[[value_column]].sum(min_count=1)
+    working = working.sort_values(value_column, ascending=False).reset_index(drop=True)
+    available = len(working)
+
 
     if working.empty:
         return None
@@ -526,6 +580,7 @@ def _build_bar_chart(
         category_column=category_column,
         value_columns=[value_column],
         max_categories=max_categories,
+        allow_other=allow_sum,
     )
 
     if working.empty:
@@ -550,6 +605,7 @@ def _build_bar_chart(
         "data": data,
         "has_other": other_count > 0,
         "other_count": other_count,
+        "omitted_rows": len(df) - available + (max(0, available - len(working)) if not other_count else 0),
     }
 
 
@@ -559,6 +615,7 @@ def _build_grouped_bar_chart(
     numeric_columns: List[str],
     max_categories: int,
     max_series: int = DEFAULT_MAX_GROUPED_BAR_SERIES,
+    additive_columns=None,
 ) -> Optional[Dict[str, Any]]:
     """
     Build a grouped (multi-series) bar chart: one categorical dimension
@@ -579,18 +636,20 @@ def _build_grouped_bar_chart(
     value_columns = numeric_columns[:max_series]
 
     working = df[[category_column, *value_columns]].copy()
-    working = working.dropna(subset=[category_column, *value_columns])
+    working = _category_values(working, category_column).dropna(subset=value_columns, how="all")
 
     if working.empty:
         return None
 
     # Aggregate duplicate categories, ranking by the first metric.
-    working = (
-        working.groupby(category_column, as_index=False)[value_columns]
-        .sum()
-        .sort_values(value_columns[0], ascending=False)
-        .reset_index(drop=True)
-    )
+    allow_sum = set(value_columns).issubset(additive_columns or set())
+    if working[category_column].duplicated().any():
+        if not allow_sum:
+            return None
+        working = working.groupby(category_column, as_index=False)[value_columns].sum(min_count=1)
+    working = working.sort_values(value_columns[0], ascending=False).reset_index(drop=True)
+    available = len(working)
+
 
     if working.empty:
         return None
@@ -600,6 +659,7 @@ def _build_grouped_bar_chart(
         category_column=category_column,
         value_columns=value_columns,
         max_categories=max_categories,
+        allow_other=allow_sum,
     )
 
     if working.empty:
@@ -624,6 +684,7 @@ def _build_grouped_bar_chart(
         "data": data,
         "has_other": other_count > 0,
         "other_count": other_count,
+        "omitted_rows": len(df) - available + (max(0, available - len(working)) if not other_count else 0),
     }
 
 
@@ -676,7 +737,11 @@ def _build_line_chart(
     if working.empty:
         return None
 
-    working = working.sort_values(x_column).head(max_rows)
+    working = working.sort_values(x_column)
+    if not use_multi_series:
+        working = working.dropna(subset=value_columns)
+    available = len(working)
+    working = _sample_rows(working, max_rows)
 
     if use_multi_series:
         data = [
@@ -695,6 +760,8 @@ def _build_line_chart(
 
         return {
             "chart_type": "line",
+        "sampled": available > len(working),
+        "omitted_rows": len(df) - len(working),
             "title": f"{', '.join(value_columns)} over {x_column}",
             "x_column": x_column,
             "y_column": value_columns[0],
@@ -719,6 +786,8 @@ def _build_line_chart(
 
     return {
         "chart_type": "line",
+        "sampled": available > len(working),
+        "omitted_rows": len(df) - len(working),
         "title": f"{value_column} over {x_column}",
         "x_column": x_column,
         "y_column": value_column,
@@ -731,6 +800,7 @@ def _build_pie_chart(
     categorical_columns: List[str],
     numeric_columns: List[str],
     max_categories: int,
+    additive_columns=None,
 ) -> Optional[Dict[str, Any]]:
     """
     Build a pie chart for a small categorical distribution.
@@ -749,17 +819,21 @@ def _build_pie_chart(
     value_column = numeric_columns[0]
 
     working = df[[category_column, value_column]].copy()
-    working = working.dropna(subset=[category_column, value_column])
+    working = _category_values(working, category_column).dropna(subset=[value_column])
 
     if working.empty:
         return None
 
-    working = (
-        working.groupby(category_column, as_index=False)[value_column]
-        .sum()
-        .sort_values(value_column, ascending=False)
-        .reset_index(drop=True)
-    )
+    allow_sum = set([value_column]).issubset(additive_columns or set())
+    if working[category_column].duplicated().any():
+        if not allow_sum:
+            return None
+        working = working.groupby(category_column, as_index=False)[[value_column]].sum(min_count=1)
+    working = working.sort_values(value_column, ascending=False).reset_index(drop=True)
+    if (working[value_column] < 0).any():
+        return None
+    available = len(working)
+
 
     if working.empty:
         return None
@@ -769,6 +843,7 @@ def _build_pie_chart(
         category_column=category_column,
         value_columns=[value_column],
         max_categories=max_categories,
+        allow_other=allow_sum,
     )
 
     if working.empty:
@@ -790,6 +865,7 @@ def _build_pie_chart(
         "data": data,
         "has_other": other_count > 0,
         "other_count": other_count,
+        "omitted_rows": len(df) - available + (max(0, available - len(working)) if not other_count else 0),
     }
 
 
@@ -807,7 +883,9 @@ def _build_scatter_chart(
     y_column = numeric_columns[1]
 
     working = df[[x_column, y_column]].copy()
-    working = working.dropna(subset=[x_column, y_column]).head(max_rows)
+    working = working.dropna(subset=[x_column, y_column])
+    available = len(working)
+    working = _sample_rows(working, max_rows)
 
     if working.empty:
         return None
@@ -822,6 +900,8 @@ def _build_scatter_chart(
 
     return {
         "chart_type": "scatter",
+        "sampled": available > len(working),
+        "omitted_rows": len(df) - len(working),
         "title": f"{y_column} vs {x_column}",
         "x_column": x_column,
         "y_column": y_column,

@@ -26,6 +26,7 @@ from app.core.llm_client import (
     get_llm_client,
 )
 from app.models.schemas import QueryResult
+from app.utils.prompt_budget import PromptBudgetError, ensure_prompt_size, shorten_value
 from app.utils.logger import get_logger
 
 
@@ -153,16 +154,19 @@ def explain_query_result(
     )
 
     try:
+        ensure_prompt_size(prompt, system_prompt)
         explanation = client.generate_text(
             prompt=prompt,
             system_prompt=system_prompt,
             max_tokens=max_tokens,
             temperature=temperature,
         )
+    except PromptBudgetError as exc:
+        raise ExplainerLLMError(str(exc)) from None
     except LLMClientError as exc:
         logger.error(
             "LLM explanation request failed: %s",
-            exc,
+            type(exc).__name__,
         )
 
         raise ExplainerLLMError(
@@ -268,7 +272,7 @@ def _build_result_summary(
     except Exception as exc:
         logger.warning(
             "Could not convert result DataFrame to records: %s",
-            exc,
+            type(exc).__name__,
         )
 
         return (
@@ -279,7 +283,7 @@ def _build_result_summary(
 
     for index, record in enumerate(records, start=1):
         safe_record = {
-            str(key): _format_value(value)
+            str(key): shorten_value(_format_value(value))
             for key, value in record.items()
         }
 

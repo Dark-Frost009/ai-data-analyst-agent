@@ -47,6 +47,8 @@ class ColumnProfile(BaseModel):
 class DatasetProfile(BaseModel):
     """Profile of an entire DataFrame."""
 
+    statistics_sampled: bool = False
+    profiled_row_count: Optional[int] = None
     row_count: int
     column_count: int
     columns: List[ColumnProfile]

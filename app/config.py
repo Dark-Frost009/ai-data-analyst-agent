@@ -51,10 +51,22 @@ class AppConfig:
 
     # --- Data & query limits ---
     # Shared limits enforced by the loader, executor and capacity guard.
-    max_upload_size_mb: int = 200
+    max_upload_size_mb: int = 100
+    max_disk_dataset_rows: int = 2_000_000
+    max_dataset_disk_mb: int = 512
+    max_total_dataset_disk_mb: int = 1024
+    dataset_load_timeout_seconds: int = 180
+    max_dataset_rows: int = 100_000
+    max_dataset_columns: int = 200
+    max_dataset_memory_mb: int = 128
+    max_total_dataset_memory_mb: int = 256
+    max_question_chars: int = 2_000
+    max_prompt_chars: int = 48_000
+    max_sample_value_chars: int = 256
     max_query_result_rows: int = 10_000
     query_timeout_seconds: int = 30
     max_concurrent_analyses: int = 1
+    max_llm_requests_per_hour: int = 60
 
     # --- SQL execution (DuckDB) resource limits ---
     # Defense-in-depth alongside utils/security.py's SQL-level checks —
@@ -66,6 +78,19 @@ class AppConfig:
     def __post_init__(self) -> None:
         """Fail fast when deployment configuration is invalid."""
         positive_values = {
+            "max_llm_requests_per_hour": self.max_llm_requests_per_hour,
+            "max_disk_dataset_rows": self.max_disk_dataset_rows,
+            "max_dataset_disk_mb": self.max_dataset_disk_mb,
+            "max_total_dataset_disk_mb": self.max_total_dataset_disk_mb,
+            "dataset_load_timeout_seconds": self.dataset_load_timeout_seconds,
+            "max_dataset_rows": self.max_dataset_rows,
+            "max_dataset_columns": self.max_dataset_columns,
+            "max_dataset_memory_mb": self.max_dataset_memory_mb,
+            "max_total_dataset_memory_mb": self.max_total_dataset_memory_mb,
+            "max_question_chars": self.max_question_chars,
+            "max_prompt_chars": self.max_prompt_chars,
+            "max_sample_value_chars": self.max_sample_value_chars,
+
             "llm_connect_timeout_seconds": self.llm_connect_timeout_seconds,
             "llm_read_timeout_seconds": self.llm_read_timeout_seconds,
             "max_upload_size_mb": self.max_upload_size_mb,
@@ -99,6 +124,18 @@ class AppConfig:
     def from_env(cls) -> "AppConfig":
         """Build config from environment variables, using dataclass defaults as fallbacks."""
         return cls(
+            max_llm_requests_per_hour=_get_int("MAX_LLM_REQUESTS_PER_HOUR", cls.max_llm_requests_per_hour),
+            max_disk_dataset_rows=_get_int("MAX_DISK_DATASET_ROWS", cls.max_disk_dataset_rows),
+            max_dataset_disk_mb=_get_int("MAX_DATASET_DISK_MB", cls.max_dataset_disk_mb),
+            max_total_dataset_disk_mb=_get_int("MAX_TOTAL_DATASET_DISK_MB", cls.max_total_dataset_disk_mb),
+            dataset_load_timeout_seconds=_get_int("DATASET_LOAD_TIMEOUT_SECONDS", cls.dataset_load_timeout_seconds),
+            max_dataset_rows=_get_int("MAX_DATASET_ROWS", cls.max_dataset_rows),
+            max_dataset_columns=_get_int("MAX_DATASET_COLUMNS", cls.max_dataset_columns),
+            max_dataset_memory_mb=_get_int("MAX_DATASET_MEMORY_MB", cls.max_dataset_memory_mb),
+            max_total_dataset_memory_mb=_get_int("MAX_TOTAL_DATASET_MEMORY_MB", cls.max_total_dataset_memory_mb),
+            max_question_chars=_get_int("MAX_QUESTION_CHARS", cls.max_question_chars),
+            max_prompt_chars=_get_int("MAX_PROMPT_CHARS", cls.max_prompt_chars),
+            max_sample_value_chars=_get_int("MAX_SAMPLE_VALUE_CHARS", cls.max_sample_value_chars),
             app_env=os.getenv("APP_ENV", cls.app_env),
             log_level=os.getenv("LOG_LEVEL", cls.log_level).upper(),
             llm_provider=os.getenv("LLM_PROVIDER", cls.llm_provider),

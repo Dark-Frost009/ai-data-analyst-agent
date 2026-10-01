@@ -233,6 +233,9 @@ Only divide by 100 when the user explicitly requests a proportion between
 
 # DATES
 
+When statistics_sampled is true, unique counts and min/max/mean describe only
+the profiled rows. Never use them as full-dataset facts or filtering bounds.
+Generate SQL against the entire dataset to obtain actual answers.
 Use pandas_dtype as the physical execution type; inferred_type is only a
 semantic hint. A datetime64 dtype is already normalized for execution.
 Compare already-normalized datetime columns directly, for example:

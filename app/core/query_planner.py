@@ -33,6 +33,8 @@ from app.core.llm_client import (
     get_llm_client,
 )
 from app.models.schemas import DatasetProfile
+from app.config import config
+from app.utils.prompt_budget import PromptBudgetError, bounded_profile_json, ensure_prompt_size
 from app.prompts.query_planner import DEFAULT_SYSTEM_PROMPT
 from app.utils.logger import get_logger
 
@@ -63,6 +65,10 @@ class QueryPlanningError(QueryPlannerError):
 
 class EmptyQuestionError(QueryPlannerError):
     """The user's analytical question was empty."""
+
+
+class QueryInputError(QueryPlanningError):
+    """A bounded-input limitation that is safe to explain to the user."""
 
 
 # ============================================================================
@@ -126,6 +132,8 @@ class QueryPlanner:
             )
 
         question = question.strip()
+        if len(question) > config.max_question_chars:
+            raise QueryInputError("The question is too long. Shorten it before analyzing.")
 
         prompt = self._build_prompt(
             question=question,
@@ -134,14 +142,17 @@ class QueryPlanner:
         )
 
         try:
+            ensure_prompt_size(prompt, self._system_prompt)
             response = self._llm_client.generate_text(
                 prompt=prompt,
                 system_prompt=self._system_prompt,
                 max_tokens=2048,
                 temperature=0.0,
             )
+        except PromptBudgetError as exc:
+            raise QueryInputError(str(exc)) from None
         except LLMClientError as exc:
-            logger.warning("LLM query-planning request failed: %s", exc)
+            logger.warning("LLM query-planning request failed: %s", type(exc).__name__)
             raise QueryPlanningError(
                 "The language model could not generate an analysis plan."
             ) from exc
@@ -181,9 +192,7 @@ class QueryPlanner:
         Build the prompt containing the complete dataset profile.
         """
 
-        profile_json = dataset_profile.model_dump_json(
-            indent=2
-        )
+        profile_json = bounded_profile_json(dataset_profile)
 
         history = QueryPlanner._format_conversation_context(
             conversation_context
@@ -301,6 +310,9 @@ level before sorting and applying LIMIT.
 
 # DATES
 
+When statistics_sampled is true, unique counts and min/max/mean describe only
+the profiled rows. Never use them as full-dataset facts or filtering bounds.
+Generate SQL against the entire dataset to obtain actual answers.
 Use pandas_dtype as the physical execution type; inferred_type is only a
 semantic hint. A datetime64 dtype is already normalized for execution.
 Compare already-normalized datetime columns directly, for example:

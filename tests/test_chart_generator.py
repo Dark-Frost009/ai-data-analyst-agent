@@ -47,6 +47,7 @@ def test_generate_bar_chart_from_category_and_numeric_data():
 
     result = generate_chart(
         _query_result(df),
+        sql='SELECT city, SUM(sales) AS sales FROM dataset GROUP BY city',
         chart_type="bar",
     )
 
@@ -452,6 +453,7 @@ def test_bar_chart_respects_max_categories():
 
     result = generate_chart(
         _query_result(df),
+        sql='SELECT category, SUM(value) AS value FROM dataset GROUP BY category',
         chart_type="bar",
         max_categories=3,
     )
@@ -890,10 +892,9 @@ def test_null_heavy_columns_drop_incomplete_rows_without_crashing():
     )
 
     assert result is not None
-    # Only rows with both a category and a value survive (A and C keep
-    # both fields; B's value is null and the two fully-null rows drop).
+    # Missing categories with a valid value remain explicit; missing values are omitted.
     categories = {row["category"] for row in result["data"]}
-    assert categories == {"A", "C"}
+    assert categories == {"A", "C", "Missing (NULL)"}
     assert all(row["value"] is not None for row in result["data"])
 
 
@@ -955,6 +956,7 @@ def test_grouped_bar_preserves_all_requested_metrics_per_category():
 
     result = generate_chart(
         _query_result(df),
+        sql='SELECT department, SUM(actual) AS actual, SUM(budget) AS budget FROM dataset GROUP BY department',
         question="Actual vs budget by department",
     )
 
@@ -1112,6 +1114,7 @@ def test_high_cardinality_bar_produces_top_12_plus_other():
 
     result = generate_chart(
         _query_result(df),
+        sql='SELECT restaurant, SUM(revenue) AS revenue FROM dataset GROUP BY restaurant',
         chart_type="bar",
         max_categories=13,  # Top 12 + 1 "Other" row = 13 total
     )
@@ -1139,6 +1142,7 @@ def test_other_bucket_value_is_the_correct_aggregate_of_remaining_categories():
 
     result = generate_chart(
         _query_result(df),
+        sql='SELECT category, SUM(value) AS value FROM dataset GROUP BY category',
         chart_type="bar",
         max_categories=3,  # Top 2 ("A","B") + Other
     )
@@ -1163,6 +1167,7 @@ def test_other_bucket_sums_correctly_for_grouped_bar():
 
     result = generate_chart(
         _query_result(df),
+        sql='SELECT region, SUM(revenue) AS revenue, SUM(cost) AS cost FROM dataset GROUP BY region',
         chart_type="grouped_bar",
         max_categories=3,
     )
@@ -1246,7 +1251,7 @@ def test_ranking_query_still_gets_other_when_its_own_limit_exceeds_max_categorie
     result = generate_chart(
         _query_result(df),
         question="top selling products",
-        sql="SELECT product, units_sold FROM dataset ORDER BY units_sold DESC LIMIT 50",
+        sql="SELECT product, SUM(units_sold) AS units_sold FROM dataset GROUP BY product ORDER BY units_sold DESC LIMIT 50",
         max_categories=20,
     )
 
@@ -1272,6 +1277,7 @@ def test_pie_chart_applies_top_n_with_other_on_explicit_high_cardinality_request
 
     result = generate_chart(
         _query_result(df),
+        sql='SELECT category, SUM(value) AS value FROM dataset GROUP BY category',
         chart_type="pie",
         max_categories=10,
     )

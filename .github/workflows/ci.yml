@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check known dependency advisories
+        run: python scripts/check_dependencies.py
+
       - name: Run tests
         run: pytest -q
 
@@ -40,7 +43,7 @@ jobs:
         run: docker build -t ai-data-analyst-agent:ci .
 
       - name: Start Docker container
-        run: docker run --detach --name ai-data-analyst-agent -p 8501:8501 ai-data-analyst-agent:ci
+        run: docker run --detach --name ai-data-analyst-agent -e APP_ACCESS_PASSWORD=ci-test-only-code -p 8501:8501 ai-data-analyst-agent:ci
 
       - name: Wait for container health
         shell: bash

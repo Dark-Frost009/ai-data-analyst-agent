@@ -249,8 +249,8 @@ def validate_sql(
     )
 
     logger.info(
-        "SQL validated successfully | cleaned_sql=%s",
-        cleaned_sql,
+        "SQL validated successfully | sql_length=%d",
+        len(cleaned_sql),
     )
 
     return ValidationResult(
@@ -589,9 +589,8 @@ def _rejected(
     """
 
     logger.warning(
-        "SQL rejected | code=%s | message=%s",
+        "SQL rejected | code=%s",
         code,
-        message,
     )
 
     return ValidationResult(

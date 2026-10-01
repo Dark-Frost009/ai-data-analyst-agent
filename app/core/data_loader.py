@@ -21,18 +21,23 @@ Design notes
 - This normalization is important because CSV files exported from
   spreadsheets/web pages can contain visually invisible Unicode whitespace
   characters that cause SQL column-reference failures.
+- Values are loaded as text; only empty cells become missing. Original
+  headers, row widths, dimensions and estimated memory are checked first.
 - Pandas-level exceptions are translated into this module's own exception
   hierarchy.
 """
 
+import csv
 import io
 import re
+import sys
 from typing import Optional
 
 import pandas as pd
 from pandas.errors import EmptyDataError, ParserError
 
 from app.config import config
+from app.utils.dataset_resources import DatasetResourceError, check_dataframe_limits
 from app.utils.logger import get_logger
 
 
@@ -356,14 +361,44 @@ def _parse_csv_bytes(
     for encoding in _ENCODING_FALLBACKS:
 
         try:
+            text = raw_bytes.decode(encoding)
+            csv.field_size_limit(config.max_upload_size_mb * 1024 * 1024)
+            reader = csv.reader(io.StringIO(text), strict=True)
+            header = next((row for row in reader if row), None)
+            if header is None:
+                raise EmptyFileError("CSV has no header or data.")
+            if len(header) > config.max_dataset_columns:
+                raise CSVParsingError(f"CSV exceeds the {config.max_dataset_columns} column limit.")
+            # Check original headers before pandas has a chance to rename duplicates.
+            names = list(_normalize_column_names(pd.DataFrame(columns=header)).columns)
+            # Validate dimensions and a conservative string-memory estimate before
+            # pandas allocation. Reject ragged rows rather than silently inferring an index.
+            estimated_bytes = sum(sys.getsizeof(name) + 8 for name in names)
+            row_count = 0
+            for row in reader:
+                if not row:
+                    continue
+                if len(row) != len(header):
+                    raise CSVParsingError("CSV rows must have the same number of fields as the header.")
+                row_count += 1
+                if row_count > config.max_dataset_rows:
+                    raise DatasetResourceError(f"CSV exceeds the {config.max_dataset_rows:,} row limit.")
+                estimated_bytes += sum(sys.getsizeof(value) + 8 for value in row)
+                if estimated_bytes * 2 > config.max_dataset_memory_mb * 1024 * 1024:
+                    raise DatasetResourceError("CSV exceeds the dataset memory budget. Upload a smaller subset.")
             df = pd.read_csv(
-                io.BytesIO(raw_bytes),
-                encoding=encoding,
+                io.StringIO(text), names=names, header=0, dtype=str,
+                keep_default_na=False, na_values=[""],
+                nrows=config.max_dataset_rows + 1,
             )
+            check_dataframe_limits(df)
 
         except UnicodeDecodeError as exc:
             last_error = exc
             continue
+
+        except (EmptyFileError, CSVParsingError, DatasetResourceError):
+            raise
 
         except EmptyDataError as exc:
             raise EmptyFileError(
@@ -371,7 +406,7 @@ def _parse_csv_bytes(
                 "(empty or header-less CSV)."
             ) from exc
 
-        except ParserError as exc:
+        except (ParserError, csv.Error) as exc:
             raise CSVParsingError(
                 f"'{filename}' could not be parsed as CSV: {exc}"
             ) from exc

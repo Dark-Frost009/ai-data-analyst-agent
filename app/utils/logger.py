@@ -23,6 +23,10 @@ class _AnalysisContextFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         record.analysis_id = _analysis_id.get()
+        # Provider/database tracebacks may embed private data or SQL literals.
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
         return True
 
 

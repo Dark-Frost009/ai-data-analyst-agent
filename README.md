@@ -93,7 +93,7 @@ The validator checks:
 - Read-only execution
 - Type conversions
 - Allowed SQL functions
-- Unqualified in-memory table references only
+- Unqualified dataset table references only
 
 Unsafe SQL is rejected before reaching DuckDB.
 
@@ -163,8 +163,11 @@ only confidently detected calendar-date columns:
 Bare years, ambiguous dates such as a column containing only `12/7/2023`
 and `1/2/2022`, mixed formats, invalid dates and unsupported values remain
 unchanged. Null positions are preserved. Existing datetime dtypes, including
-timezones, are retained. This initial layer does not normalize currency,
-percentages, booleans or other numeric text.
+timezones, are retained. CSV ingestion preserves text, including zero-padded IDs and literal `NA`/`NULL`
+labels; empty cells are the explicit missing-value convention. Execution preparation
+can normalize canonical, representable integer and decimal text separately, while
+leaving zero-padded IDs, bare years, mixed values and precision-sensitive numbers
+unchanged. Currency, percentages and booleans are not coerced during ingestion.
 
 The prepared DataFrame is re-profiled. The Query Planner receives that
 execution profile, and SQLExecutor receives the same prepared DataFrame.
@@ -498,6 +501,85 @@ The goal is to provide both the **answer** and enough information to understand 
 
 ---
 
+## Correctness and Hosting Limits
+
+- Original CSV headers are checked before parsing; duplicate/blank headers and
+  ragged rows are rejected. Lexical values remain text in the preview.
+- After SQL security validation, a separate conversion check rejects unresolved
+  text dates and numeric conversions that discard values, round away precision
+  or overflow. Common literal `REPLACE`/`TRIM` cleanup is checked across every
+  non-null value. Unverifiable conversions of derived aliases/aggregates are
+  declined; use prepared columns directly or clean the input explicitly.
+- Charts preserve grouping dimensions. Multiple categorical dimensions or
+  duplicate categories without proven additive metrics are left in the table.
+  Only simple top-level `SUM` and non-distinct `COUNT` outputs authorize an
+  additive "Other" bucket. Averages, ratios and distinct counts use disclosed
+  subsets instead; non-additive SQL metrics are not rendered as pie slices.
+- Line/scatter charts sample evenly across the full returned range when capped,
+  and disclose omitted rows and series. Samples can omit intermediate outliers.
+- A rejected replacement upload pauses analysis and clears stale results and
+  follow-up context. Retry the selection, select a valid CSV, or remove the
+  rejected upload to explicitly resume the previous dataset.
+- Default upload limit is **100 MB per CSV**, with **200 columns**. Small CSVs
+  use the pandas workflow (up to **100,000 rows**); uploads above 1 MB, or
+  compact CSVs exceeding the pandas budget, use a private disk-backed DuckDB
+  database (up to **2,000,000 rows**). DataFrame memory reservations remain
+  **128 MB per session** and **256 MB across sessions**; these do not include
+  Streamlit's upload buffers or DuckDB's separate query memory budget.
+  Reservations conservatively account for raw and execution copies. Preparation
+  is serialized; clearing/replacing a dataset releases its reservation.
+  Row/column checks and a string-memory estimate run before pandas allocation.
+- Questions are limited to **2,000 characters**; combined model input is limited
+  to **48,000 characters**. Sample text is shortened at **256 characters** with a
+  notice. Identifiers and questions are never silently shortened. Oversized
+  schemas are rejected before a provider request; explanations have the same
+  input budget. Character budgets are conservative input controls, not exact
+  token counts or a guarantee against provider-specific rate limits.
+- Application logs record SQL length, status, timings and analysis IDs instead
+  of full SQL. Exception bodies and tracebacks are suppressed because they can
+  include private filter values. Dataset filenames/column normalization metadata
+  may still appear; restrict access and retention for hosting logs.
+
+Large-file preparation copies the raw CSV unchanged to a private temporary
+folder and scans bounded batches (at most 5,000 rows or about 4 MB). Date and
+numeric candidates must pass every batch; any ambiguity or invalid value keeps
+the column as text. US date ordering evidence may appear in a later batch.
+Numeric columns that require different types in different batches are kept as
+text conservatively. No conversion occurs in the loader or original executor.
+
+SQL runs against the complete typed database, opened read-only with external
+access and intermediate disk spilling disabled. Displayed results are limited
+to 16 MB and the existing row limit. Type-conversion checks scan full data when
+needed, within the query time budget. Preview/statistical profiles retain at
+most 1,000 rows from the first bounded batch: unique counts/min/max/mean are
+sample statistics; row counts, null counts and SQL answers cover all rows.
+
+Temporary storage defaults to 512 MB per dataset and 1,024 MB per process,
+reserved before preparation. Loading has a 180-second time limit. Clearing,
+replacement, failed preparation and session-object garbage collection remove
+files; timed-out query workers retain their files until they finish. Garbage
+collection is not an immediate browser-disconnect callback. Runtime directories use OS owner locks. On the next process startup/first
+disk upload, application-marked crash leftovers are reaped while live owners
+are skipped. Legacy unmarked temporary folders are left for host cleanup.
+CSV fields over 1 MB, physical lines over 2 MB or rows over about 4 MB are
+rejected so a single oversized record cannot bypass the batch budget.
+
+This adds no paid services or dependencies. Streamlit's uploader itself holds
+file bytes in memory, outside these batch controls, and free hosting still has
+finite resources. A 100 MB upload limit is an acceptance ceiling, not a promise
+that every file or query fits every free host. Local execution on your own
+computer supports the same workflow without requiring paid hosting. Adjust
+both frontend and application limits together when changing the default.
+See [Streamlit upload storage](https://docs.streamlit.io/knowledge-base/using-streamlit/where-file-uploader-store-when-deleted)
+and [Community Cloud resource guidance](https://docs.streamlit.io/knowledge-base/deploy/resource-limits).
+
+Limits are configurable in `.env.example`. If changing the upload limit, also
+adjust `.streamlit/config.toml` so the frontend agrees. Dataset reservations and
+DuckDB connection limits are safeguards, not an operating-system memory cap;
+perform bounded load tests before increasing them for a shared host.
+
+---
+
 ## 🧩 Project Structure
 
 ```text
@@ -515,6 +597,8 @@ ai-data-analyst-agent/
 │   │   ├── data_loader.py
 │   │   ├── data_profiler.py
 │   │   ├── execution_preparation.py
+│   │   ├── numeric_preparation.py
+│   │   ├── semantic_checks.py
 │   │   ├── explainer.py
 │   │   ├── llm_client.py
 │   │   ├── query_planner.py
@@ -551,6 +635,7 @@ ai-data-analyst-agent/
 │   ├── test_data_loader.py
 │   ├── test_data_profiler.py
 │   ├── test_execution_preparation.py
+│   ├── test_review_regressions.py
 │   ├── test_explainer.py
 │   ├── test_llm_client.py
 │   ├── test_query_planner.py
@@ -791,6 +876,9 @@ container, and waits for Docker to report it as healthy.
 
 ## 🚢 Deployment Checklist
 
+See [OPERATIONS.md](OPERATIONS.md) for production defaults, quota controls,
+health monitoring, crash cleanup, smoke tests and rollback instructions.
+
 - Keep `APP_ENV=production` and a strong private `APP_ACCESS_PASSWORD`.
 - Set `GROQ_API_KEY` privately and verify the model in your account.
 - Run `pytest -q` on Python 3.11 and review the live synthetic-data answers.
@@ -876,11 +964,12 @@ The CSV is processed in the app host's memory with pandas and restricted
 DuckDB. It is not uploaded as a file to Groq, but **data values do leave the
 host when you analyze**:
 
-- Planning sends your question, the full dataset profile (column names,
-  types, counts, numeric statistics and the first five sample rows), and
+- Planning sends your question, the execution profile (exact column names,
+  types, counts, numeric statistics and up to five sample rows with bounded
+  sample text), and
   up to three previous successful questions and SQL statements.
 - Explanation sends the validated SQL, result metadata and up to 20 result
-  rows. Values can contain personal or confidential information.
+  rows with bounded sample text. Values can contain personal or confidential information.
 - Follow-up context stays in the browser's server session until cleared or
   lost, and is sent again with follow-up planning requests.
 
@@ -1009,12 +1098,24 @@ https://github.com/Dark-Frost009
 **Deployed on Streamlit Community Cloud with Groq and a shared password gate.**
 
 - Live app: [groq-data-analyst.streamlit.app](https://groq-data-analyst.streamlit.app/).
-- Local validation (October 2, 2026): **387 tests passed** on Python 3.12.7, with **88.97% coverage**; the focused preparation, agent, planner, profiler and executor run passed **137 tests**.
+- Local validation (October 2, 2026): **468 tests passed** on Python 3.12.7 with the patched dependencies and production safeguards, with **89.12% coverage** in the actual repository. Detailed release checks are recorded in OPERATIONS.md. The earlier review-fix batch passed 436 tests with 89.55% coverage. The previous typed-execution release passed 387 tests with 88.97% coverage.
 - [GitHub Actions validation](https://github.com/Dark-Frost009/ai-data-analyst-agent/actions/runs/36924788796) passed Python 3.11 tests and Docker build/startup health checks for the typed-execution fix, commit `fb16dba`.
-- Local execution against `Messy_Employee_dataset.csv` returned 445 rows for employees joining after 2022. The hosted query still needs manual verification after refreshing and re-uploading the CSV.
+- Local execution against `Messy_Employee_dataset.csv` returned 445 rows for employees joining after 2022; the user confirmed the deployed date fix works. The latest release includes project-review fixes, large-file support and production operation safeguards; see the release verification record for hosted status.
 - A manual live check using the bundled synthetic CSV returned the expected artists **A and C** for “Which artists in year 2015 had gross over $5 million?” The public password gate was also checked independently.
 
 This is a deployment smoke check, not a comprehensive model-accuracy evaluation.
 Offline fixtures use fixed model responses and validate the surrounding pipeline.
 Run `pytest -q` for current local results. Remaining work includes individual
 user accounts, durable query history and production monitoring.
+
+
+### Production operations
+
+AI requests are capped at 60 per hour per process (`MAX_LLM_REQUESTS_PER_HOUR`),
+including planning and explanation attempts. Provider quotas can be stricter.
+Failed provider calls are not retried automatically, and credential/access/quota
+failures have fixed user-facing messages. Logs include safe status, timings and
+reported token counts without private request contents. Docker defaults to
+production and requires an access code. GitHub checks dependencies against OSV;
+existing Dependabot updates remain enabled. A separate workflow probes the
+hosted server every 30 minutes without credentials or AI calls.

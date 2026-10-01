@@ -11,6 +11,8 @@ from typing import Callable
 
 import pandas as pd
 
+from app.core.numeric_preparation import coerce_numeric
+
 
 def _coerce_datetime(series: pd.Series) -> pd.Series | None:
     """Accept ISO calendar dates or consistently evidenced US slash dates.
@@ -50,6 +52,7 @@ def _coerce_datetime(series: pd.Series) -> pd.Series | None:
 
 _COERCIONS: tuple[Callable[[pd.Series], pd.Series | None], ...] = (
     _coerce_datetime,
+    coerce_numeric,
 )
 
 

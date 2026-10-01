@@ -80,6 +80,7 @@ from app.core.data_loader import (
 from app.core.data_profiler import profile_dataframe
 from app.core.query_planner import MAX_CONVERSATION_TURNS
 from app.utils.logger import get_logger
+from app.utils.dataset_resources import DatasetResourceError, dataset_preparation_slot
 
 
 logger = get_logger(__name__)
@@ -118,6 +119,11 @@ def _initialize_session_state() -> None:
 
     if "dataset_profile" not in st.session_state:
         st.session_state.dataset_profile = None
+
+    if "upload_error" not in st.session_state:
+        st.session_state.upload_error = False
+    if "failed_upload_signature" not in st.session_state:
+        st.session_state.failed_upload_signature = None
 
     if "agent" not in st.session_state:
         st.session_state.agent = None
@@ -197,6 +203,10 @@ def _uploaded_file_signature(uploaded_file) -> tuple:
 
 def _clear_dataset() -> None:
     """Clear all analysis state and force Streamlit to create a fresh uploader."""
+    if st.session_state.agent is not None:
+        st.session_state.agent.release_dataset()
+    st.session_state.upload_error = False
+    st.session_state.failed_upload_signature = None
     st.session_state.dataframe = None
     st.session_state.dataset_profile = None
     st.session_state.agent = None
@@ -226,16 +236,53 @@ def _load_uploaded_file(
     Session state is updated only after the complete pipeline succeeds.
     """
 
+    st.session_state.upload_error = True
+    st.session_state.failed_upload_signature = upload_signature
+    st.session_state.last_result = None
+    st.session_state.conversation_history = []
     try:
-        dataframe = load_csv(uploaded_file)
+        with dataset_preparation_slot():
+            # Small uploads retain the original DataFrame workflow.
+            # Larger uploads avoid materializing the full CSV in pandas.
+            disk_dataset = None
+            if getattr(uploaded_file, "size", 0) > 1024**2:
+                from app.core.disk_dataset import DiskDataset
+                status = st.empty()
+                try:
+                    disk_dataset = DiskDataset(uploaded_file, progress=status.caption)
+                    dataframe = disk_dataset.preview
+                    dataset_profile = disk_dataset.raw_profile
+                finally:
+                    status.empty()
+            else:
+                try:
+                    dataframe = load_csv(uploaded_file)
+                    dataset_profile = profile_dataframe(dataframe)
+                except DatasetResourceError:
+                    # A compact CSV can have too many rows for the pandas path.
+                    from app.core.disk_dataset import DiskDataset
+                    status = st.empty()
+                    try:
+                        disk_dataset = DiskDataset(uploaded_file, progress=status.caption)
+                        dataframe = disk_dataset.preview
+                        dataset_profile = disk_dataset.raw_profile
+                    finally:
+                        status.empty()
+            try:
+                agent = DataAnalystAgent(
+                    dataframe=dataframe,
+                    dataset_profile=dataset_profile,
+                    max_result_rows=config.max_query_result_rows,
+                    **({"disk_dataset": disk_dataset} if disk_dataset else {}),
+                )
+            except Exception:
+                if disk_dataset is not None:
+                    disk_dataset.close()
+                raise
 
-        dataset_profile = profile_dataframe(dataframe)
-
-        agent = DataAnalystAgent(
-            dataframe=dataframe,
-            dataset_profile=dataset_profile,
-            max_result_rows=config.max_query_result_rows,
-        )
+    except DatasetResourceError as exc:
+        st.error(str(exc))
+        return
 
     except FileTooLargeError as exc:
         st.error(f"📦 File is too large: {exc}")
@@ -267,6 +314,11 @@ def _load_uploaded_file(
         )
         return
 
+    previous_agent = st.session_state.agent
+    if previous_agent is not None:
+        previous_agent.release_dataset()
+    st.session_state.upload_error = False
+    st.session_state.failed_upload_signature = None
     st.session_state.dataframe = dataframe
     st.session_state.dataset_profile = dataset_profile
     st.session_state.agent = agent
@@ -291,7 +343,7 @@ def _load_uploaded_file(
     st.success(
         f"✅ Successfully loaded "
         f"**{st.session_state.uploaded_filename}** "
-        f"({len(dataframe):,} rows × {len(dataframe.columns)} columns)."
+        f"({dataset_profile.row_count:,} rows × {dataset_profile.column_count} columns)."
     )
 
 
@@ -313,6 +365,8 @@ def _display_dataset_overview() -> None:
     )
 
     st.subheader("📋 Dataset Overview")
+    if profile.statistics_sampled:
+        st.caption(f"SQL analyzes all {profile.row_count:,} rows. Preview and unique/min/max/mean statistics use the first {profile.profiled_row_count:,} rows; missing-value counts cover the full dataset.")
 
     col1, col2, col3 = st.columns(3)
 
@@ -544,6 +598,12 @@ def _display_chart(chart_spec) -> None:
     # "Other" is a summary bucket, not a dropped tail — make it visible
     # whenever the chart actually gained one (bar, grouped_bar, or pie;
     # line/scatter never set this key, so this is a no-op for them).
+    if rendered and chart_spec.get("omitted_rows", 0):
+        st.caption(f"Showing {chart_spec['displayed_rows']:,} plotted points; {chart_spec['omitted_rows']:,} rows are omitted. The table contains the complete returned result.")
+    if rendered and chart_spec.get("sampled"):
+        st.caption("This chart uses evenly spaced rows across the full range; intermediate values and outliers may be absent.")
+    if rendered and chart_spec.get("omitted_series", 0):
+        st.caption(f"{chart_spec['omitted_series']} additional numeric series are available in the table.")
     if rendered and chart_spec.get("has_other"):
 
         other_count = chart_spec.get("other_count", 0)
@@ -774,12 +834,20 @@ def main() -> None:
             if (
                 current_upload_signature
                 != st.session_state.uploaded_file_signature
+                and current_upload_signature != st.session_state.failed_upload_signature
             ):
 
                 _load_uploaded_file(
                     uploaded_file,
                     upload_signature=current_upload_signature,
                 )
+
+        if st.session_state.upload_error and uploaded_file is not None:
+            if st.button("Retry selected upload", use_container_width=True):
+                _load_uploaded_file(uploaded_file, _uploaded_file_signature(uploaded_file))
+        if uploaded_file is None:
+            st.session_state.upload_error = False
+            st.session_state.failed_upload_signature = None
 
         if st.button(
             "Clear active dataset",
@@ -999,6 +1067,10 @@ def main() -> None:
     # Dataset overview
     # ----------------------------------------------------------------------
 
+    if st.session_state.upload_error:
+        st.warning("The selected CSV was not loaded. Analysis is paused. Retry, choose a valid CSV, or remove the rejected upload to resume the previous dataset.")
+        return
+
     _display_dataset_overview()
 
     st.divider()
@@ -1033,6 +1105,7 @@ def main() -> None:
             "Example: What are the top 10 products by total sales?"
         ),
         height=110,
+        max_chars=config.max_question_chars,
         label_visibility="collapsed",
     )
 
