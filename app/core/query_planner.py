@@ -301,20 +301,19 @@ level before sorting and applying LIMIT.
 
 # DATES
 
-If a date/time column is VARCHAR/text:
+Use pandas_dtype as the physical execution type; inferred_type is only a
+semantic hint. A datetime64 dtype is already normalized for execution.
+Compare already-normalized datetime columns directly, for example:
 
-TRY_CAST("date_column" AS DATE)
+WHERE "Join_Date" > DATE '2022-12-31'
 
-or:
+Do not wrap already-normalized datetime columns in TRY_CAST or TRY_STRPTIME.
+For monthly analysis on these columns use DATE_TRUNC('MONTH', "Join_Date").
 
-TRY_CAST("timestamp_column" AS TIMESTAMP)
-
-For monthly analysis:
-
-DATE_TRUNC(
-    'MONTH',
-    TRY_CAST("date_column" AS DATE)
-)
+Object/string columns remain VARCHAR/text even when inferred_type says datetime.
+Do not guess a date format or month/day ordering for ambiguous or mixed text.
+Only when text is consistently ISO-formatted may TRY_CAST("date_column" AS DATE)
+be used. Never silently discard invalid dates to answer a date-filter question.
 
 # RANKING
 

@@ -47,6 +47,8 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 import pandas as pd
 
 from app.core.chart_generator import generate_chart
+from app.core.data_profiler import profile_dataframe
+from app.core.execution_preparation import prepare_execution_dataframe
 from app.config import config
 from app.core.explainer import ExplainerError, explain_query_result
 from app.core.query_planner import QueryPlanner, QueryPlannerError
@@ -243,6 +245,8 @@ class DataAnalystAgent:
 
         self._dataframe = dataframe
         self._dataset_profile = dataset_profile
+        self._execution_dataframe = prepare_execution_dataframe(dataframe)
+        self._execution_profile = profile_dataframe(self._execution_dataframe)
         self._query_planner = (
             query_planner
             if query_planner is not None
@@ -264,13 +268,23 @@ class DataAnalystAgent:
 
     @property
     def dataframe(self) -> pd.DataFrame:
-        """Return the DataFrame used by this agent."""
+        """Return the original upload, preserved for preview and inspection."""
         return self._dataframe
 
     @property
     def dataset_profile(self) -> DatasetProfile:
-        """Return the dataset profile used by the agent."""
+        """Return the original upload profile."""
         return self._dataset_profile
+
+    @property
+    def execution_dataframe(self) -> pd.DataFrame:
+        """Return the prepared DataFrame supplied to SQL execution."""
+        return self._execution_dataframe
+
+    @property
+    def execution_profile(self) -> DatasetProfile:
+        """Return the prepared schema supplied to query planning."""
+        return self._execution_profile
 
     @property
     def max_result_rows(self) -> int:
@@ -356,7 +370,7 @@ class DataAnalystAgent:
         try:
             sql = self._query_planner.plan(
                 question=question,
-                dataset_profile=self._dataset_profile,
+                dataset_profile=self._execution_profile,
                 conversation_context=conversation_context,
             )
 
@@ -393,7 +407,7 @@ class DataAnalystAgent:
         # ------------------------------------------------------------------
 
         with SQLExecutor(
-            self._dataframe,
+            self._execution_dataframe,
             max_result_rows=self._max_result_rows,
         ) as executor:
 

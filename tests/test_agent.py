@@ -349,7 +349,7 @@ def test_agent_forwards_conversation_context_to_planner(
 
     mock_planner.plan.assert_called_once_with(
         question="Now show only the top two.",
-        dataset_profile=dataset_profile,
+        dataset_profile=agent.execution_profile,
         conversation_context=context,
     )
 
