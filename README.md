@@ -10,6 +10,51 @@ The application converts natural-language questions into DuckDB-compatible SQL u
 
 ---
 
+## 🎬 Preview
+
+A real run on the live app: upload a messy employee CSV, ask *"How many employees joined after 2022?"* in plain English, and get an AI-written insight, the result table and the SQL that produced it.
+
+<p align="center">
+  <img src="docs/images/demo.gif" alt="Demo: uploading a CSV, asking a question in plain English, and getting an insight, a result table and the generated SQL" width="100%">
+</p>
+
+> **Note:** The live demo needs an access code (it protects the AI usage quota), and the free host may take a moment to wake up if nobody has visited recently. The recording and screenshots here are taken from the actual deployed app.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/01-home.png" alt="Home screen with the CSV upload sidebar"><br>
+      <sub><b>1. Upload a CSV</b> from the sidebar to activate the analyst.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/02-dataset-overview.png" alt="Dataset overview showing 1,020 rows, 12 columns, 211 missing values and a data preview"><br>
+      <sub><b>2. Dataset overview</b>: row, column and missing-value counts, plus a data preview.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/03-dataset-profile.png" alt="Dataset profile table with pandas type, inferred type, null count and unique values per column"><br>
+      <sub><b>3. Dataset profile</b>: inferred types, nulls and unique values for every column.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/04-ask-a-question.png" alt="Question box with 'How many employees joined after 2022?' and the Analyze button"><br>
+      <sub><b>4. Ask in plain English</b> and click Analyze.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/05-key-insight.png" alt="Key Insight section with summary, key value of 445, comparison and limitations"><br>
+      <sub><b>5. Key insight</b>: a summary, the key value and the limitations of the result.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/06-query-result-sql.png" alt="Query result of 445 employees and the generated DuckDB SQL"><br>
+      <sub><b>6. Result and generated SQL</b>: the validated query that DuckDB ran.</sub>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## 🚀 Features
 
 ### 📊 Natural-Language Data Analysis
